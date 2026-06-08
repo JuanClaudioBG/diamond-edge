@@ -1,0 +1,684 @@
+import express from "express";
+import cors    from "cors";
+import dotenv  from "dotenv";
+import Anthropic from "@anthropic-ai/sdk";
+import { fileURLToPath } from "url";
+import path from "path";
+import { getAllPicks, insertPick, updateResultado } from "./db.js";
+
+dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST      = path.join(__dirname, "../dist");
+
+const app      = express();
+const client   = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MLB_BASE = "https://statsapi.mlb.com/api/v1";
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(DIST));
+
+/* ─── Baseball Savant leaderboard cache ─────────────────────────── */
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+let savantCache = { map: null, fetchedAt: 0 };
+
+function savantURL() {
+  const year = new Date().getFullYear();
+  return (
+    "https://baseballsavant.mlb.com/leaderboard/custom" +
+    `?year=${year}&type=pitcher&filter=&min=0` +
+    "&selections=xera,exit_velocity_avg,barrel_batted_rate,hard_hit_percent,whiff_percent,xwoba,k_percent,bb_percent" +
+    "&chart=false&csv=true"
+  );
+}
+
+function parseCSVLine(line) {
+  const fields = [];
+  let current  = "";
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"')             { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { fields.push(current.trim()); current = ""; }
+    else                        { current += ch; }
+  }
+  fields.push(current.trim());
+  return fields;
+}
+
+function parseLeaderboardCSV(csv) {
+  const lines   = csv.replace(/\r/g, "").trim().split("\n");
+  if (lines.length < 2) return new Map();
+  const headers = parseCSVLine(lines[0]);
+  const map     = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseCSVLine(lines[i]);
+    const row  = Object.fromEntries(headers.map((h, j) => [h, vals[j] ?? ""]));
+    if (row.player_id) map.set(row.player_id, row);
+  }
+  return map;
+}
+
+async function getSavantMap() {
+  const now = Date.now();
+  if (savantCache.map && now - savantCache.fetchedAt < CACHE_TTL_MS) {
+    return savantCache.map;
+  }
+  try {
+    const res  = await fetch(savantURL());
+    const csv  = await res.text();
+    const map  = parseLeaderboardCSV(csv);
+    savantCache = { map, fetchedAt: now };
+    console.log(`[Savant] Leaderboard cargado: ${map.size} pitchers`);
+    return map;
+  } catch (err) {
+    console.error("[Savant] Error fetching leaderboard:", err.message);
+    return savantCache.map ?? new Map();
+  }
+}
+
+function fmtSavant(row, name) {
+  if (!row) return `${name}: sin datos Statcast suficientes`;
+  const d = (v) => (v && v !== "" ? v : "–");
+  return (
+    `${name}: xERA ${d(row.xera)} | ` +
+    `Exit Velo ${d(row.exit_velocity_avg)} mph | ` +
+    `Barrel% ${d(row.barrel_batted_rate)} | ` +
+    `Hard Hit% ${d(row.hard_hit_percent)} | ` +
+    `Whiff% ${d(row.whiff_percent)} | ` +
+    `xwOBA ${d(row.xwoba)} | ` +
+    `K% ${d(row.k_percent)} | ` +
+    `BB% ${d(row.bb_percent)}`
+  );
+}
+
+/* ─── FanGraphs leaderboard cache ───────────────────────────────── */
+function normalizeName(s) {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9 ]/g, "")
+    .trim();
+}
+
+function lookupFangraphs(map, fullName) {
+  if (!fullName || !map) return null;
+  const key = normalizeName(fullName);
+  if (map.has(key)) return map.get(key);
+  // Partial match: every token in the query must appear in the stored key
+  const tokens = key.split(" ").filter(Boolean);
+  for (const [storedKey, row] of map) {
+    if (tokens.every(t => storedKey.includes(t))) return row;
+  }
+  return null;
+}
+
+async function scrapeFangraphs() {
+  const year = new Date().getFullYear();
+  const url  = (
+    `https://www.fangraphs.com/leaders/major-league` +
+    `?pos=all&stats=pit&lg=all&qual=y&type=8&season=${year}&pageitems=500`
+  );
+  const res  = await fetch("https://api.firecrawl.dev/v1/scrape", {
+    method:  "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.FIRECRAWL_API_KEY}`,
+      "Content-Type":  "application/json",
+    },
+    body: JSON.stringify({
+      url,
+      formats:         ["markdown"],
+      onlyMainContent: true,
+      waitFor:         8000,
+    }),
+  });
+  const json = await res.json();
+  return json.data?.markdown ?? "";
+}
+
+function parseFangraphsMarkdown(markdown) {
+  // Column indices (0-based) after splitting a table row by "|" and trimming:
+  // 0:rank  1:name  2:team  3:W  4:L  5:SV  6:G  7:GS  8:IP  9:--
+  // 10:K/9  11:BB/9  12:HR/9  13:BABIP  14:LOB%  15:GB%  16:HR/FB  17:--
+  // 18:vFA  19:--  20:ERA  21:xERA  22:FIP  23:xFIP  24:--  25:WAR
+  const map = new Map();
+  for (const line of markdown.split("\n")) {
+    if (!line.startsWith("|")) continue;
+    const cells = line.split("|").slice(1, -1).map(c => c.trim());
+    if (cells.length < 26) continue;
+    if (!/^\d+$/.test(cells[0])) continue;   // skip header / separator rows
+    const nameMatch = cells[1].match(/\[([^\]]+)\]/);
+    if (!nameMatch) continue;
+    const name = nameMatch[1];
+    map.set(normalizeName(name), {
+      name,
+      fip:    cells[22],
+      xfip:   cells[23],
+      war:    cells[25],
+      babip:  cells[13],
+      lobpct: cells[14],
+      gbpct:  cells[15],
+    });
+  }
+  return map;
+}
+
+let fangraphsCache = { map: null, fetchedAt: 0 };
+
+async function getFangraphsMap() {
+  const now = Date.now();
+  if (fangraphsCache.map && now - fangraphsCache.fetchedAt < CACHE_TTL_MS) {
+    return fangraphsCache.map;
+  }
+  try {
+    const markdown = await scrapeFangraphs();
+    const map      = parseFangraphsMarkdown(markdown);
+    fangraphsCache = { map, fetchedAt: now };
+    console.log(`[FanGraphs] Leaderboard cargado: ${map.size} pitchers`);
+    return map;
+  } catch (err) {
+    console.error("[FanGraphs] Error:", err.message);
+    return fangraphsCache.map ?? new Map();
+  }
+}
+
+function fmtFangraphs(row, name) {
+  if (!row) return `${name}: sin datos FanGraphs`;
+  const d = (v) => (v && v !== "" ? v : "–");
+  return (
+    `${name}: FIP ${d(row.fip)} | xFIP ${d(row.xfip)} | WAR ${d(row.war)} | ` +
+    `BABIP ${d(row.babip)} | LOB% ${d(row.lobpct)} | GB% ${d(row.gbpct)}`
+  );
+}
+
+/* ─── Baseball Savant batter leaderboard cache ───────────────────── */
+let savantBatterCache = { map: null, fetchedAt: 0 };
+
+function savantBatterURL() {
+  const year = new Date().getFullYear();
+  return (
+    "https://baseballsavant.mlb.com/leaderboard/custom" +
+    `?year=${year}&type=batter&filter=&min=50` +
+    "&selections=xwoba,barrel_batted_rate,hard_hit_percent,whiff_percent,k_percent,bb_percent,exit_velocity_avg" +
+    "&chart=false&csv=true"
+  );
+}
+
+async function getSavantBatterMap() {
+  const now = Date.now();
+  if (savantBatterCache.map && now - savantBatterCache.fetchedAt < CACHE_TTL_MS) {
+    return savantBatterCache.map;
+  }
+  try {
+    const res = await fetch(savantBatterURL());
+    const csv = await res.text();
+    const map = parseLeaderboardCSV(csv);
+    savantBatterCache = { map, fetchedAt: now };
+    console.log(`[Savant] Batter leaderboard cargado: ${map.size} bateadores`);
+    return map;
+  } catch (err) {
+    console.error("[Savant] Error fetching batter leaderboard:", err.message);
+    return savantBatterCache.map ?? new Map();
+  }
+}
+
+const BATTER_FIELDS = [
+  "xwoba", "barrel_batted_rate", "hard_hit_percent",
+  "whiff_percent", "k_percent", "bb_percent", "exit_velocity_avg",
+];
+
+function buildBatterProfiles(map) {
+  const teams = new Map();
+  for (const row of map.values()) {
+    const tid = row.team_id;
+    if (!tid) continue;
+    if (!teams.has(tid)) {
+      teams.set(tid, { sums: Object.fromEntries(BATTER_FIELDS.map(f => [f, 0])), count: 0 });
+    }
+    const entry = teams.get(tid);
+    for (const f of BATTER_FIELDS) {
+      const v = parseFloat(row[f]);
+      if (!isNaN(v)) entry.sums[f] += v;
+    }
+    entry.count++;
+  }
+  const profiles = new Map();
+  for (const [tid, { sums, count }] of teams) {
+    if (count === 0) continue;
+    profiles.set(tid, Object.fromEntries(BATTER_FIELDS.map(f => [f, sums[f] / count])));
+  }
+  return profiles;
+}
+
+function fmtBatterTeam(profile, teamName) {
+  if (!profile) return `${teamName}: sin datos Statcast de bateadores`;
+  const p1 = (f) => parseFloat(profile[f]).toFixed(1);
+  const p3 = (f) => parseFloat(profile[f]).toFixed(3);
+  return (
+    `${teamName}: xwOBA ${p3("xwoba")} | ` +
+    `Barrel% ${p1("barrel_batted_rate")} | ` +
+    `Hard Hit% ${p1("hard_hit_percent")} | ` +
+    `Exit Velo ${p1("exit_velocity_avg")} mph | ` +
+    `K% ${p1("k_percent")} | ` +
+    `BB% ${p1("bb_percent")}`
+  );
+}
+
+/* ─── MLB Standings cache (4 h TTL) ─────────────────────────────── */
+const STANDINGS_TTL_MS = 4 * 60 * 60 * 1000;
+let standingsCache = { map: null, fetchedAt: 0 };
+
+function buildStandingsMap(data) {
+  const map = new Map();
+  for (const division of (data?.records ?? [])) {
+    for (const tr of (division.teamRecords ?? [])) {
+      const tid = String(tr.team?.id);
+      if (!tid) continue;
+      const splits = {};
+      for (const sr of (tr.splitRecords ?? [])) {
+        splits[sr.type] = { wins: sr.wins, losses: sr.losses };
+      }
+      map.set(tid, splits);
+    }
+  }
+  return map;
+}
+
+async function getStandingsMap() {
+  const now = Date.now();
+  if (standingsCache.map && now - standingsCache.fetchedAt < STANDINGS_TTL_MS) {
+    return standingsCache.map;
+  }
+  try {
+    const res  = await fetch(`${MLB_BASE}/standings?leagueId=103,104&season=${new Date().getFullYear()}`);
+    const data = await res.json();
+    const map  = buildStandingsMap(data);
+    standingsCache = { map, fetchedAt: now };
+    console.log(`[Standings] Cargados: ${map.size} equipos`);
+    return map;
+  } catch (err) {
+    console.error("[Standings] Error fetching standings:", err.message);
+    return standingsCache.map ?? new Map();
+  }
+}
+
+/* ─── MLB Stadiums + Weather ─────────────────────────────────────── */
+// ofb = outfield bearing (degrees from home plate toward center field)
+// roof: "dome" | "retractable" | undefined (open air)
+const STADIUMS = {
+  "Oriole Park at Camden Yards": { lat: 39.2839,  lon: -76.6218,  ofb: 35  },
+  "Fenway Park":                 { lat: 42.3467,  lon: -71.0972,  ofb: 55  },
+  "Yankee Stadium":              { lat: 40.8296,  lon: -73.9262,  ofb: 310 },
+  "Tropicana Field":             { lat: 27.7683,  lon: -82.6534,  ofb: 140, roof: "dome"        },
+  "Rogers Centre":               { lat: 43.6414,  lon: -79.3894,  ofb: 10,  roof: "retractable" },
+  "Guaranteed Rate Field":       { lat: 41.8300,  lon: -87.6339,  ofb: 350 },
+  "Progressive Field":           { lat: 41.4962,  lon: -81.6852,  ofb: 35  },
+  "Comerica Park":               { lat: 42.3390,  lon: -83.0485,  ofb: 25  },
+  "Kauffman Stadium":            { lat: 39.0517,  lon: -94.4803,  ofb: 10  },
+  "Target Field":                { lat: 44.9817,  lon: -93.2781,  ofb: 300 },
+  "Minute Maid Park":            { lat: 29.7573,  lon: -95.3555,  ofb: 340, roof: "retractable" },
+  "Angel Stadium":               { lat: 33.8003,  lon: -117.8827, ofb: 0   },
+  "Sutter Health Park":          { lat: 38.5802,  lon: -121.5017, ofb: 340 },
+  "T-Mobile Park":               { lat: 47.5914,  lon: -122.3325, ofb: 340, roof: "retractable" },
+  "Globe Life Field":            { lat: 32.7473,  lon: -97.0831,  ofb: 25,  roof: "retractable" },
+  "Truist Park":                 { lat: 33.8908,  lon: -84.4677,  ofb: 5   },
+  "loanDepot park":              { lat: 25.7781,  lon: -80.2197,  ofb: 350, roof: "retractable" },
+  "Citi Field":                  { lat: 40.7571,  lon: -73.8458,  ofb: 315 },
+  "Citizens Bank Park":          { lat: 39.9061,  lon: -75.1665,  ofb: 340 },
+  "Nationals Park":              { lat: 38.8730,  lon: -77.0074,  ofb: 335 },
+  "Wrigley Field":               { lat: 41.9484,  lon: -87.6553,  ofb: 45  },
+  "Great American Ball Park":    { lat: 39.0979,  lon: -84.5082,  ofb: 0   },
+  "American Family Field":       { lat: 43.0280,  lon: -87.9712,  ofb: 340, roof: "retractable" },
+  "PNC Park":                    { lat: 40.4468,  lon: -80.0057,  ofb: 335 },
+  "Busch Stadium":               { lat: 38.6226,  lon: -90.1929,  ofb: 30  },
+  "Chase Field":                 { lat: 33.4453,  lon: -112.0667, ofb: 330, roof: "retractable" },
+  "Coors Field":                 { lat: 39.7559,  lon: -104.9942, ofb: 20  },
+  "Dodger Stadium":              { lat: 34.0739,  lon: -118.2400, ofb: 330 },
+  "Petco Park":                  { lat: 32.7076,  lon: -117.1570, ofb: 310 },
+  "Oracle Park":                 { lat: 37.7786,  lon: -122.3893, ofb: 15  },
+};
+
+function matchStadium(venueName) {
+  if (!venueName) return null;
+  if (STADIUMS[venueName]) return { ...STADIUMS[venueName], name: venueName };
+  const lower = venueName.toLowerCase();
+  for (const [key, val] of Object.entries(STADIUMS)) {
+    if (lower.includes(key.toLowerCase()) || key.toLowerCase().includes(lower)) {
+      return { ...val, name: key };
+    }
+  }
+  return null;
+}
+
+function degToCardinal(deg) {
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}
+
+function angleDiff(a, b) {
+  return Math.abs(((a - b) + 180) % 360 - 180);
+}
+
+async function fetchWeather(venueName) {
+  const stadium = matchStadium(venueName);
+  if (!stadium) return null;
+  try {
+    const url = (
+      `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${stadium.lat}&longitude=${stadium.lon}` +
+      `&current=temperature_2m,wind_speed_10m,wind_direction_10m,precipitation_probability` +
+      `&wind_speed_unit=kmh&temperature_unit=celsius&timezone=auto`
+    );
+    const res  = await fetch(url);
+    const data = await res.json();
+    const cur  = data.current;
+    if (!cur) return null;
+
+    const temp     = Math.round(cur.temperature_2m);
+    const windSpd  = Math.round(cur.wind_speed_10m);
+    const windDir  = cur.wind_direction_10m;
+    const rainPct  = cur.precipitation_probability ?? 0;
+    const cardinal = degToCardinal(windDir);
+
+    let hrWarn = "";
+    if (!stadium.roof && windSpd > 20) {
+      const blowingToward = (windDir + 180) % 360;
+      if (angleDiff(blowingToward, stadium.ofb) <= 45) hrWarn = " ⚠️ viento favorable a HR";
+    }
+
+    const roofNote = stadium.roof === "dome"        ? " 🏟️ techo fijo"
+                   : stadium.roof === "retractable" ? " 🏟️ techo retráctil"
+                   : "";
+
+    return `${stadium.name}: ${temp}°C | Viento ${windSpd} km/h → ${cardinal}${hrWarn} | Lluvia ${rainPct}%${roofNote}`;
+  } catch (err) {
+    console.error("[Weather] Error:", err.message);
+    return null;
+  }
+}
+
+/* ─── FIP calculator (MLB Stats API data) ───────────────────────── */
+const FIP_CONST = 3.15; // 2024-2026 MLB average
+
+function parseIP(ip) {
+  if (!ip) return 0;
+  const [full = "0", thirds = "0"] = String(ip).split(".");
+  return parseInt(full) + parseInt(thirds) / 3;
+}
+
+function fmtDerived(s, name) {
+  if (!s) return `${name}: sin datos suficientes`;
+  const ip = parseIP(s.inningsPitched);
+  if (ip < 1) return `${name}: sin datos suficientes`;
+  const hr  = parseFloat(s.homeRuns)    || 0;
+  const bb  = parseFloat(s.baseOnBalls) || 0;
+  const hbp = parseFloat(s.hitBatsmen)  || 0;
+  const so  = parseFloat(s.strikeOuts)  || 0;
+  const fip = ((13 * hr + 3 * (bb + hbp) - 2 * so) / ip + FIP_CONST).toFixed(2);
+  const k9  = ((so / ip) * 9).toFixed(1);
+  const bb9 = ((bb / ip) * 9).toFixed(1);
+  const hr9 = ((hr / ip) * 9).toFixed(2);
+  const kbb = bb > 0 ? (so / bb).toFixed(2) : "–";
+  return `${name}: FIP ${fip} | K/9 ${k9} | BB/9 ${bb9} | HR/9 ${hr9} | K/BB ${kbb}`;
+}
+
+/* ─── Prompt helpers ─────────────────────────────────────────────── */
+const fmtRec = (r) => (r ? `${r.wins}–${r.losses}` : "");
+const ps  = (s, p) => s
+  ? `${p?.fullName || "TBD"} — ERA ${s.era} WHIP ${s.whip} IP ${s.inningsPitched} SO ${s.strikeOuts} BB ${s.baseOnBalls} K/9 ${s.strikeoutsPer9Inn || "N/A"}`
+  : `${p?.fullName || "TBD"} — sin datos`;
+const hs  = (t, x) => `${t.name}: AVG ${x.avg || "–"} OBP ${x.obp || "–"} SLG ${x.slg || "–"} OPS ${x.ops || "–"} HR ${x.homeRuns || "–"} R ${x.runs || "–"} K ${x.strikeOuts || "–"}`;
+const pts = (t, x) => `${t.name}: ERA ${x.era || "–"} WHIP ${x.whip || "–"} SO ${x.strikeOuts || "–"} BB ${x.baseOnBalls || "–"} HR-A ${x.homeRuns || "–"}`;
+
+function fmtForm(splits, teamName) {
+  if (!splits) return `${teamName}: sin datos de forma`;
+  const l10 = splits.lastTen;
+  const hm  = splits.home;
+  const aw  = splits.away;
+  let l10str = "–";
+  if (l10) {
+    const tag  = l10.wins >= 7 ? " 🔥" : l10.wins <= 3 ? " ❄️" : "";
+    l10str = `${l10.wins}-${l10.losses}${tag}`;
+  }
+  return (
+    `${teamName}: Últimos 10: ${l10str} | ` +
+    `Casa: ${hm ? `${hm.wins}-${hm.losses}` : "–"} | ` +
+    `Visita: ${aw ? `${aw.wins}-${aw.losses}` : "–"}`
+  );
+}
+
+function fmtMatchupLine(m) {
+  const ab    = parseInt(m.vs?.atBats || 0);
+  const vsStr = `vsTeam: AVG ${m.vs?.avg || "–"} | HR ${m.vs?.homeRuns || 0} | OPS ${m.vs?.ops || "–"} (${ab} AB)`;
+  const szStr = m.sz
+    ? `2026: AVG ${m.sz.avg || "–"} | OPS ${m.sz.ops || "–"}`
+    : "2026: sin datos";
+  return `${m.name} — ${vsStr} | ${szStr}`;
+}
+
+function fmtMatchups(matchups, teamName, opposingName) {
+  const qualified = matchups
+    .filter(m => m.vs && parseInt(m.vs.atBats || 0) >= 10)
+    .sort((x, y) => parseFloat(y.vs.ops || 0) - parseFloat(x.vs.ops || 0));
+  if (qualified.length === 0) {
+    return `${teamName} vs ${opposingName}: sin matchups con ≥10 AB histórico`;
+  }
+  const top  = qualified.slice(0, Math.min(3, qualified.length));
+  const rest = qualified.slice(top.length);
+  const bot  = rest.length > 0 ? rest.slice(-Math.min(3, rest.length)).reverse() : [];
+  const lines = [
+    `FAVORABLE ${teamName} vs ${opposingName} (top OPS histórico):`,
+    ...top.map((m, i) => `  ${i + 1}. ${fmtMatchupLine(m)}`),
+  ];
+  if (bot.length > 0) {
+    lines.push(`DESFAVORABLE ${teamName} vs ${opposingName} (peor OPS histórico):`);
+    lines.push(...bot.map((m, i) => `  ${i + 1}. ${fmtMatchupLine(m)}`));
+  }
+  return lines.join("\n");
+}
+
+/* ─── Endpoint ───────────────────────────────────────────────────── */
+app.post("/api/analyze", async (req, res) => {
+  const { home: h, away: a, gamePk, venue } = req.body;
+  if (!h || !a) return res.status(400).json({ error: "Se requieren datos de home y away." });
+
+  const season = new Date().getFullYear();
+  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap] = await Promise.all([
+    getSavantMap(),
+    getSavantBatterMap(),
+    gamePk
+      ? fetch(`${MLB_BASE}/game/${gamePk}/boxscore`).then(r => r.json()).catch(() => null)
+      : Promise.resolve(null),
+    getStandingsMap(),
+    fetchWeather(venue),
+    fetch(`${MLB_BASE}/teams/${h.team.id}/stats?stats=season&group=pitching&season=${season}&playerPool=BULLPEN`).then(r => r.json()).catch(() => null),
+    fetch(`${MLB_BASE}/teams/${a.team.id}/stats?stats=season&group=pitching&season=${season}&playerPool=BULLPEN`).then(r => r.json()).catch(() => null),
+    getFangraphsMap(),
+  ]);
+  const batterProfiles = buildBatterProfiles(batterMap);
+  const aSavant = a.prob?.id ? savant.get(String(a.prob.id)) : null;
+  const hSavant = h.prob?.id ? savant.get(String(h.prob.id)) : null;
+  const aName   = a.prob?.fullName || "Visitante TBD";
+  const hName   = h.prob?.fullName || "Local TBD";
+  const aFG     = lookupFangraphs(fangraphsMap, aName);
+  const hFG     = lookupFangraphs(fangraphsMap, hName);
+
+  /* ── Lineup & individual batter matchups ──────────────────────── */
+  const aOrder   = boxscore?.teams?.away?.battingOrder ?? [];
+  const hOrder   = boxscore?.teams?.home?.battingOrder ?? [];
+  const aPlayers = boxscore?.teams?.away?.players ?? {};
+  const hPlayers = boxscore?.teams?.home?.players ?? {};
+
+  const fetchBatter = async (pid, opposingTeamId, players) => {
+    const name = players[`ID${pid}`]?.person?.fullName ?? String(pid);
+    const [vsRes, szRes] = await Promise.all([
+      fetch(`${MLB_BASE}/people/${pid}/stats?stats=vsTeam&group=hitting&opposingTeamId=${opposingTeamId}`).then(r => r.json()).catch(() => null),
+      fetch(`${MLB_BASE}/people/${pid}/stats?stats=season&group=hitting&season=2026`).then(r => r.json()).catch(() => null),
+    ]);
+    return {
+      name,
+      vs: vsRes?.stats?.[0]?.splits?.[0]?.stat ?? null,
+      sz: szRes?.stats?.[0]?.splits?.[0]?.stat ?? null,
+    };
+  };
+
+  const [aMatchups, hMatchups] = await Promise.all([
+    Promise.all(aOrder.map(pid => fetchBatter(pid, h.team.id, aPlayers))),
+    Promise.all(hOrder.map(pid => fetchBatter(pid, a.team.id, hPlayers))),
+  ]);
+
+  console.log(`[Lineup] ${a.team.name}: ${aOrder.length} bat | ${h.team.name}: ${hOrder.length} bat`);
+
+  const lineupAvailable = aOrder.length > 0 || hOrder.length > 0;
+  const matchupSection  = lineupAvailable
+    ? `MATCHUPS INDIVIDUALES (lineup confirmado):\n${fmtMatchups(aMatchups, a.team.name, h.team.name)}\n${fmtMatchups(hMatchups, h.team.name, a.team.name)}`
+    : "MATCHUPS INDIVIDUALES: Lineup no disponible aún";
+
+  const aSplits       = standingsMap.get(String(a.team.id));
+  const hSplits       = standingsMap.get(String(h.team.id));
+  const formSection   = `FORMA RECIENTE Y SPLITS:\n${fmtForm(aSplits, a.team.name)}\n${fmtForm(hSplits, h.team.name)}`;
+  const weatherSection = `CLIMA Y CONDICIONES:\n${weather ?? "datos no disponibles"}`;
+
+  const fmtBullpen = (data, teamName) => {
+    const st = data?.stats?.[0]?.splits?.[0]?.stat;
+    if (!st) return `${teamName}: datos no disponibles`;
+    const era  = st.era        != null ? Number(st.era).toFixed(2)  : "–";
+    const whip = st.whip       != null ? Number(st.whip).toFixed(2) : "–";
+    const hld  = st.holds      != null ? st.holds      : "–";
+    const bs   = st.blownSaves != null ? st.blownSaves : "–";
+    return `${teamName}: ERA ${era} | WHIP ${whip} | Holds ${hld} | Blown Saves ${bs}`;
+  };
+  const bullpenSection = `BULLPEN (relievers únicamente):\n${fmtBullpen(aBullpen, a.team.name)}\n${fmtBullpen(hBullpen, h.team.name)}`;
+  console.log(`[Weather] ${venue ?? "sin venue"}:`, weather ?? "sin datos");
+
+  const prompt = `Eres analista MLB estilo Moneyball/FanGraphs. Analiza este partido y genera picks con valor real para apuestas deportivas.
+
+PARTIDO: ${a.team.name} (${fmtRec(a.rec)}) @ ${h.team.name} (${fmtRec(h.rec)})
+
+LANZADORES PROBABLES:
+Visitante: ${ps(a.ps, a.prob)}
+Local: ${ps(h.ps, h.prob)}
+
+OFENSIVA TEMPORADA:
+${hs(a.team, a.hit)}
+${hs(h.team, h.hit)}
+
+${formSection}
+
+${weatherSection}
+
+OFENSIVA STATCAST (por equipo, Baseball Savant ${new Date().getFullYear()}, mín 50 PA):
+${fmtBatterTeam(batterProfiles.get(String(a.team.id)), a.team.name)}
+${fmtBatterTeam(batterProfiles.get(String(h.team.id)), h.team.name)}
+
+PITCHEO EQUIPO (temporada):
+${pts(a.team, a.pit)}
+${pts(h.team, h.pit)}
+
+${bullpenSection}
+
+STATCAST AVANZADO (Baseball Savant ${new Date().getFullYear()}):
+${fmtSavant(aSavant, aName)}
+${fmtSavant(hSavant, hName)}
+
+FANGRAPHS AVANZADO (${new Date().getFullYear()}, pitchers calificados):
+${fmtFangraphs(aFG, aName)}
+${fmtFangraphs(hFG, hName)}
+
+MÉTRICAS DERIVADAS (calculadas de MLB Stats API):
+${fmtDerived(a.ps, aName)}
+${fmtDerived(h.ps, hName)}
+
+${matchupSection}
+
+REGLAS PARA RUN LINE:
+Si el bullpen del equipo favorito tiene ERA > 4.50 → añade "⚠️ Bullpen frágil — riesgo Run Line" en el campo razon del pick de Run Line correspondiente.
+
+REGLAS PARA PICKS DE TOTAL (OVER/UNDER):
+Evalúa estos 4 factores antes de asignar valor a un Total:
+  1. xERA confirma ERA real de AMBOS pitchers (diferencia < 1.0 en cada uno)
+  2. Clima sin viento superior a 20 km/h, o estadio con techo
+  3. Lineup confirmado de ambos equipos (no vacío en MATCHUPS INDIVIDUALES)
+  4. Convergencia entre Statcast de bateadores (xwOBA, barrel%) y el perfil del pitcher rival
+Si se cumplen 3 o 4 factores → puedes marcar el Total como VALOR ALTO.
+Si se cumplen menos de 3 → máximo VALOR MEDIO, y añade "⚠️ Total con incertidumbre alta" en el campo razon del pick.
+
+Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher titular, toros del bullpen. Al interpretar métricas: xERA vs ERA real indica suerte/regresión esperada; FIP mide rendimiento independiente de la defensa (FIP < ERA = pitcher con mala suerte); xFIP normaliza la tasa de HR al 10.5% de fly balls (xFIP < FIP = la tasa de HR regresará a la media); BABIP alto con LOB% bajo indica mala suerte defensiva o situacional; GB% alto reduce HR permitidos y favorece al pitcher en estadios grandes; barrel rate y exit velo miden calidad de contacto permitido; whiff% y K% miden dominancia; xwOBA es el indicador más predictivo de producción ofensiva futura; K/BB > 3.0 indica control élite. Responde ÚNICAMENTE JSON sin markdown ni texto extra:
+{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"estimado":"9.5","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
+
+  try {
+    console.log("Modelo enviado a Anthropic:", "claude-sonnet-4-6");
+    console.log(`[Statcast]  ${aName}:`, aSavant ? "encontrado" : "sin datos");
+    console.log(`[Statcast]  ${hName}:`, hSavant ? "encontrado" : "sin datos");
+    console.log(`[FanGraphs] ${aName}:`, aFG     ? "encontrado" : "sin datos");
+    console.log(`[FanGraphs] ${hName}:`, hFG     ? "encontrado" : "sin datos");
+
+    const message = await client.messages.create({
+      model:      "claude-sonnet-4-6",
+      max_tokens: 4096,
+      messages:   [{ role: "user", content: prompt }],
+    });
+
+    const txt = message.content
+      .filter(c => c.type === "text")
+      .map(c => c.text)
+      .join("");
+
+    res.json(JSON.parse(txt.replace(/```json|```/g, "").trim()));
+  } catch (err) {
+    console.error("Error llamando a Anthropic:", err.message);
+    res.status(500).json({ error: true });
+  }
+});
+
+/* ─── Picks / Historial endpoints ───────────────────────────────── */
+app.get("/api/picks", (_req, res) => {
+  try {
+    res.json(getAllPicks());
+  } catch (err) {
+    console.error("Error leyendo picks:", err.message);
+    res.status(500).json({ error: true });
+  }
+});
+
+app.post("/api/picks", (req, res) => {
+  const { fecha, partido, tipo, pick, valor, riesgo } = req.body;
+  if (!fecha || !partido || !tipo || !pick) {
+    return res.status(400).json({ error: "Faltan campos requeridos." });
+  }
+  try {
+    const result = insertPick({ fecha, partido, tipo, pick, valor, riesgo });
+    res.status(201).json({ id: Number(result.lastInsertRowid) });
+  } catch (err) {
+    console.error("Error insertando pick:", err.message);
+    res.status(500).json({ error: true });
+  }
+});
+
+app.patch("/api/picks/:id", (req, res) => {
+  const id        = Number(req.params.id);
+  const { resultado } = req.body;
+  const valid = [null, "ganó", "perdió"];
+  if (!valid.includes(resultado)) {
+    return res.status(400).json({ error: "resultado debe ser null, 'ganó' o 'perdió'." });
+  }
+  try {
+    updateResultado(id, resultado);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error actualizando resultado:", err.message);
+    res.status(500).json({ error: true });
+  }
+});
+
+/* Catch-all: serve React app for any non-API route */
+app.get("/{*path}", (_req, res) => res.sendFile(path.join(DIST, "index.html")));
+
+/* Warm up caches on boot */
+Promise.all([getSavantMap(), getSavantBatterMap(), getStandingsMap(), getFangraphsMap()]);
+
+app.listen(3001, () => {
+  console.log("Diamond Edge server corriendo en http://localhost:3001");
+});

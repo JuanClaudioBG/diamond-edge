@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/hal-9000/Documents/diamond-edge/src/components)",
+      "Bash(npm run *)",
+      "Bash(mkdir -p /Users/hal-9000/Documents/diamond-edge/server)",
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(node index.js)",
+      "WebFetch(domain:baseballsavant.mlb.com)",
+      "Bash(node --check index.js)",
+      "Bash(node --check server/index.js)",
+      "WebFetch(domain:www.fangraphs.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(node --check /Users/hal-9000/Documents/diamond-edge/server/index.js)"
+    ],
+    "additionalDirectories": [
+      "/Users/hal-9000/Documents/diamond-edge/src"
+    ]
+  }
+}
