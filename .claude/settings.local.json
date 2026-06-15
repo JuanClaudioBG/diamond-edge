@@ -13,7 +13,10 @@
       "WebFetch(domain:www.fangraphs.com)",
       "WebSearch",
       "WebFetch(domain:github.com)",
-      "Bash(node --check /Users/hal-9000/Documents/diamond-edge/server/index.js)"
+      "Bash(node --check /Users/hal-9000/Documents/diamond-edge/server/index.js)",
+      "WebFetch(domain:www.baseball-reference.com)",
+      "Bash(curl -s \"https://statsapi.mlb.com/api/v1/people/554430/stats?stats=statSplits&group=pitching&season=2026&sitCodes=vl,vr\")",
+      "Bash(python3 -m json.tool)"
     ],
     "additionalDirectories": [
       "/Users/hal-9000/Documents/diamond-edge/src"

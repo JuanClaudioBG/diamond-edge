@@ -119,7 +119,7 @@ async function scrapeFangraphs() {
   const year = new Date().getFullYear();
   const url  = (
     `https://www.fangraphs.com/leaders/major-league` +
-    `?pos=all&stats=pit&lg=all&qual=y&type=8&season=${year}&pageitems=500`
+    `?pos=all&stats=pit&lg=all&qual=0&type=8&season=${year}&pageitems=500`
   );
   const res  = await fetch("https://api.firecrawl.dev/v1/scrape", {
     method:  "POST",
@@ -485,7 +485,7 @@ app.post("/api/analyze", async (req, res) => {
   if (!h || !a) return res.status(400).json({ error: "Se requieren datos de home y away." });
 
   const season = new Date().getFullYear();
-  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap] = await Promise.all([
+  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap, aPlatoon, hPlatoon] = await Promise.all([
     getSavantMap(),
     getSavantBatterMap(),
     gamePk
@@ -496,6 +496,8 @@ app.post("/api/analyze", async (req, res) => {
     fetch(`${MLB_BASE}/teams/${h.team.id}/stats?stats=season&group=pitching&season=${season}&playerPool=BULLPEN`).then(r => r.json()).catch(() => null),
     fetch(`${MLB_BASE}/teams/${a.team.id}/stats?stats=season&group=pitching&season=${season}&playerPool=BULLPEN`).then(r => r.json()).catch(() => null),
     getFangraphsMap(),
+    a.prob?.id ? fetch(`${MLB_BASE}/people/${a.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
+    h.prob?.id ? fetch(`${MLB_BASE}/people/${h.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
   ]);
   const batterProfiles = buildBatterProfiles(batterMap);
   const aSavant = a.prob?.id ? savant.get(String(a.prob.id)) : null;
@@ -551,6 +553,18 @@ app.post("/api/analyze", async (req, res) => {
     return `${teamName}: ERA ${era} | WHIP ${whip} | Holds ${hld} | Blown Saves ${bs}`;
   };
   const bullpenSection = `BULLPEN (relievers únicamente):\n${fmtBullpen(aBullpen, a.team.name)}\n${fmtBullpen(hBullpen, h.team.name)}`;
+
+  const fmtPlatoon = (data, name) => {
+    if (!data) return `${name}: sin datos de plateo`;
+    const splits = data.stats?.[0]?.splits ?? [];
+    const vl = splits.find(s => s.split?.code === "vl")?.stat;
+    const vr = splits.find(s => s.split?.code === "vr")?.stat;
+    const side = (s, label) => s
+      ? `${label}: AVG ${s.avg || "–"} | OPS ${s.ops || "–"} | WHIP ${s.whip || "–"} | K ${s.strikeOuts || 0} | BB ${s.baseOnBalls || 0} | HR ${s.homeRuns || 0}`
+      : `${label}: sin datos`;
+    return `${name} — ${side(vl, "vs Zurdos")} / ${side(vr, "vs Diestros")}`;
+  };
+  const platoonSection = `SPLITS POR PLATEO (temporada ${season}):\n${fmtPlatoon(aPlatoon, aName)}\n${fmtPlatoon(hPlatoon, hName)}`;
   console.log(`[Weather] ${venue ?? "sin venue"}:`, weather ?? "sin datos");
 
   const prompt = `Eres analista MLB estilo Moneyball/FanGraphs. Analiza este partido y genera picks con valor real para apuestas deportivas.
@@ -590,6 +604,8 @@ ${fmtFangraphs(hFG, hName)}
 MÉTRICAS DERIVADAS (calculadas de MLB Stats API):
 ${fmtDerived(a.ps, aName)}
 ${fmtDerived(h.ps, hName)}
+
+${platoonSection}
 
 ${matchupSection}
 
