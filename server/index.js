@@ -4,9 +4,15 @@ import dotenv  from "dotenv";
 import Anthropic from "@anthropic-ai/sdk";
 import { fileURLToPath } from "url";
 import path from "path";
-import { getAllPicks, insertPick, updateResultado } from "./db.js";
+import { getAllPicks, insertPick, updateResultado, insertAnalysisLog } from "./db.js";
+import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 
 dotenv.config();
+
+/* Versionado de la lógica: cambiar en cada modificación del prompt o de las
+   fuentes de datos, para que el backtest pueda comparar versiones entre sí. */
+const LOGIC_VERSION = "2026-07-02.1";
+const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST      = path.join(__dirname, "../dist");
@@ -277,7 +283,7 @@ function buildStandingsMap(data) {
       const tid = String(tr.team?.id);
       if (!tid) continue;
       const splits = {};
-      for (const sr of (tr.splitRecords ?? [])) {
+      for (const sr of (tr.records?.splitRecords ?? [])) {
         splits[sr.type] = { wins: sr.wins, losses: sr.losses };
       }
       map.set(tid, splits);
@@ -399,6 +405,93 @@ async function fetchWeather(venueName) {
   }
 }
 
+/* ─── The Odds API ──────────────────────────────────────────────── */
+const ODDS_TTL_MS   = 60 * 60 * 1000; // 1h cache
+const ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds";
+let oddsCache = { games: null, fetchedAt: 0 };
+
+async function getOddsCache() {
+  const now = Date.now();
+  if (oddsCache.games && now - oddsCache.fetchedAt < ODDS_TTL_MS) return oddsCache.games;
+  try {
+    const r = await fetch(
+      `${ODDS_API_BASE}/?apiKey=${process.env.ODDS_API_KEY}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`
+    );
+    const data = await r.json();
+    if (Array.isArray(data)) oddsCache = { games: data, fetchedAt: now };
+    return oddsCache.games ?? [];
+  } catch {
+    return oddsCache.games ?? [];
+  }
+}
+
+function normTeam(name) {
+  return String(name).toLowerCase().replace(/[^a-z]/g, "");
+}
+
+async function getOddsForGame(homeTeamName, awayTeamName) {
+  const games = await getOddsCache();
+  const hn = normTeam(homeTeamName);
+  const an = normTeam(awayTeamName);
+  return (
+    games.find(g => normTeam(g.home_team) === hn && normTeam(g.away_team) === an) ??
+    games.find(g => normTeam(g.home_team).includes(hn.slice(-7)) && normTeam(g.away_team).includes(an.slice(-7))) ??
+    null
+  );
+}
+
+function americanToProb(odds) {
+  const o = Number(odds);
+  return o >= 0 ? 100 / (o + 100) : -o / (-o + 100);
+}
+
+/** Probabilidades implícitas sin vig del moneyline. null si no hay línea. */
+function marketProbs(oddsGame, homeTeamName, awayTeamName) {
+  if (!oddsGame?.bookmakers?.length) return null;
+  const bk = oddsGame.bookmakers.find(b => ["draftkings","fanduel","betmgm"].includes(b.key))
+           ?? oddsGame.bookmakers[0];
+  const h2h = bk.markets?.find(m => m.key === "h2h");
+  if (!h2h) return null;
+  const hOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(homeTeamName));
+  const aOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(awayTeamName));
+  if (!hOut || !aOut) return null;
+  const hp = americanToProb(hOut.price), ap = americanToProb(aOut.price);
+  const tot = hp + ap;
+  return { home: hp / tot, away: ap / tot, book: bk.title ?? bk.key, homePrice: hOut.price, awayPrice: aOut.price };
+}
+
+function fmtOddsSection(oddsGame, homeTeamName, awayTeamName) {
+  if (!oddsGame?.bookmakers?.length) return "LÍNEAS DE MERCADO: no disponibles";
+  const bk = oddsGame.bookmakers.find(b => ["draftkings","fanduel","betmgm"].includes(b.key))
+           ?? oddsGame.bookmakers[0];
+  const h2h     = bk.markets?.find(m => m.key === "h2h");
+  const spreads = bk.markets?.find(m => m.key === "spreads");
+  const totals  = bk.markets?.find(m => m.key === "totals");
+  const lines   = [];
+
+  if (h2h) {
+    const aOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(awayTeamName));
+    const hOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(homeTeamName));
+    if (aOut && hOut) {
+      const ap = americanToProb(aOut.price), hp = americanToProb(hOut.price);
+      const tot = ap + hp;
+      const apV = (ap / tot * 100).toFixed(1), hpV = (hp / tot * 100).toFixed(1);
+      const fmt = (p) => (p > 0 ? "+" : "") + p;
+      lines.push(`Moneyline: Vis ${fmt(aOut.price)} (prob real ${apV}%) | Loc ${fmt(hOut.price)} (prob real ${hpV}%)`);
+    }
+  }
+  if (spreads) {
+    const aOut = spreads.outcomes.find(o => normTeam(o.name) === normTeam(awayTeamName));
+    if (aOut) lines.push(`Run Line: Vis ${aOut.point > 0 ? "+" : ""}${aOut.point} (${aOut.price > 0 ? "+" : ""}${aOut.price})`);
+  }
+  if (totals) {
+    const over = totals.outcomes.find(o => o.name === "Over");
+    if (over) lines.push(`Total: ${over.point} | Over ${over.price > 0 ? "+" : ""}${over.price}`);
+  }
+
+  return `LÍNEAS DE MERCADO (${bk.title ?? bk.key}):\n${lines.join("\n") || "sin líneas disponibles"}`;
+}
+
 /* ─── FIP calculator (MLB Stats API data) ───────────────────────── */
 const FIP_CONST = 3.15; // 2024-2026 MLB average
 
@@ -481,11 +574,11 @@ function fmtMatchups(matchups, teamName, opposingName) {
 
 /* ─── Endpoint ───────────────────────────────────────────────────── */
 app.post("/api/analyze", async (req, res) => {
-  const { home: h, away: a, gamePk, venue } = req.body;
+  const { home: h, away: a, gamePk, venue, gameDate } = req.body;
   if (!h || !a) return res.status(400).json({ error: "Se requieren datos de home y away." });
 
   const season = new Date().getFullYear();
-  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap, aPlatoon, hPlatoon] = await Promise.all([
+  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap, aPlatoon, hPlatoon, oddsGame, hFatigue, aFatigue] = await Promise.all([
     getSavantMap(),
     getSavantBatterMap(),
     gamePk
@@ -498,6 +591,9 @@ app.post("/api/analyze", async (req, res) => {
     getFangraphsMap(),
     a.prob?.id ? fetch(`${MLB_BASE}/people/${a.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
     h.prob?.id ? fetch(`${MLB_BASE}/people/${h.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
+    getOddsForGame(h.team.name, a.team.name),
+    getBullpenFatigue(h.team.id).catch(() => null),
+    getBullpenFatigue(a.team.id).catch(() => null),
   ]);
   const batterProfiles = buildBatterProfiles(batterMap);
   const aSavant = a.prob?.id ? savant.get(String(a.prob.id)) : null;
@@ -517,7 +613,7 @@ app.post("/api/analyze", async (req, res) => {
     const name = players[`ID${pid}`]?.person?.fullName ?? String(pid);
     const [vsRes, szRes] = await Promise.all([
       fetch(`${MLB_BASE}/people/${pid}/stats?stats=vsTeam&group=hitting&opposingTeamId=${opposingTeamId}`).then(r => r.json()).catch(() => null),
-      fetch(`${MLB_BASE}/people/${pid}/stats?stats=season&group=hitting&season=2026`).then(r => r.json()).catch(() => null),
+      fetch(`${MLB_BASE}/people/${pid}/stats?stats=season&group=hitting&season=${season}`).then(r => r.json()).catch(() => null),
     ]);
     return {
       name,
@@ -565,7 +661,30 @@ app.post("/api/analyze", async (req, res) => {
     return `${name} — ${side(vl, "vs Zurdos")} / ${side(vr, "vs Diestros")}`;
   };
   const platoonSection = `SPLITS POR PLATEO (temporada ${season}):\n${fmtPlatoon(aPlatoon, aName)}\n${fmtPlatoon(hPlatoon, hName)}`;
+  const oddsSection    = fmtOddsSection(oddsGame, h.team.name, a.team.name);
+  const fatigueSection =
+    `FATIGA DE BULLPEN (indicador experimental de DISPONIBILIDAD, ventana 7 días — úsalo solo como contexto secundario, no como driver principal de ningún pick):\n` +
+    `${fmtBullpenFatigue(aFatigue, a.team.name)}\n${fmtBullpenFatigue(hFatigue, h.team.name)}`;
+
+  /* Calidad de datos: fracción de fuentes que llegaron con datos reales */
+  const sections = {
+    savantAway:    !!aSavant,        savantHome:   !!hSavant,
+    fangraphsAway: !!aFG,            fangraphsHome: !!hFG,
+    weather:       !!weather,        odds:          !!oddsGame,
+    lineup:        lineupAvailable,
+    splitsAway:    !!(aSplits && Object.keys(aSplits).length),
+    splitsHome:    !!(hSplits && Object.keys(hSplits).length),
+    bullpenAway:   !!aBullpen?.stats?.[0]?.splits?.[0]?.stat,
+    bullpenHome:   !!hBullpen?.stats?.[0]?.splits?.[0]?.stat,
+    platoonAway:   !!aPlatoon,       platoonHome:  !!hPlatoon,
+    fatigueAway:   !!aFatigue,       fatigueHome:  !!hFatigue,
+  };
+  const dataQuality = Object.values(sections).filter(Boolean).length / Object.keys(sections).length;
+  const retro = gameDate ? (Date.now() > new Date(gameDate).getTime() ? 1 : 0) : 0;
+
   console.log(`[Weather] ${venue ?? "sin venue"}:`, weather ?? "sin datos");
+  console.log(`[Odds]    ${a.team.name} @ ${h.team.name}:`, oddsGame ? "encontrado" : "sin datos");
+  console.log(`[Calidad] ${(dataQuality * 100).toFixed(0)}% de fuentes con datos${retro ? " · ⚠ análisis posterior al inicio (retro)" : ""}`);
 
   const prompt = `Eres analista MLB estilo Moneyball/FanGraphs. Analiza este partido y genera picks con valor real para apuestas deportivas.
 
@@ -593,6 +712,8 @@ ${pts(h.team, h.pit)}
 
 ${bullpenSection}
 
+${fatigueSection}
+
 STATCAST AVANZADO (Baseball Savant ${new Date().getFullYear()}):
 ${fmtSavant(aSavant, aName)}
 ${fmtSavant(hSavant, hName)}
@@ -609,6 +730,8 @@ ${platoonSection}
 
 ${matchupSection}
 
+${oddsSection}
+
 REGLAS PARA RUN LINE:
 Si el bullpen del equipo favorito tiene ERA > 4.50 → añade "⚠️ Bullpen frágil — riesgo Run Line" en el campo razon del pick de Run Line correspondiente.
 
@@ -621,20 +744,27 @@ Evalúa estos 4 factores antes de asignar valor a un Total:
 Si se cumplen 3 o 4 factores → puedes marcar el Total como VALOR ALTO.
 Si se cumplen menos de 3 → máximo VALOR MEDIO, y añade "⚠️ Total con incertidumbre alta" en el campo razon del pick.
 
+REGLA DE SOPORTE OFENSIVO:
+Si el pitcher abridor tiene métricas dominantes (xERA bajo, K/9 alto) PERO su equipo tiene ofensiva débil en temporada (OPS por debajo de .700 o entre los peores del partido), NO asumas automáticamente que el dominio del pitcher se traduce en victoria del equipo. Separa el análisis: "el pitcher puede ganar el duelo individual" vs "el equipo puede ganar el partido". En estos casos, el Moneyline del equipo con el pitcher dominante debe bajar de confianza si su ofensiva no respalda, incluso si el pitcheo se ve favorable.
+
+PROBABILIDAD Y VALOR:
+Emite tu probabilidad de victoria del equipo LOCAL como número 0-100 en el campo probLocal (obligatorio). Sé honesto: si el partido es parejo, di 50-55, no exageres. El valor esperado contra el mercado se calcula fuera del modelo con tu probLocal — NO calcules EV tú mismo ni inventes probabilidades de mercado. Usa LÍNEAS DE MERCADO solo como referencia de qué espera el consenso: si tu lectura difiere mucho del mercado, explica POR QUÉ en factoresClave (el mercado suele tener razón).
+
 Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher titular, toros del bullpen. Al interpretar métricas: xERA vs ERA real indica suerte/regresión esperada; FIP mide rendimiento independiente de la defensa (FIP < ERA = pitcher con mala suerte); xFIP normaliza la tasa de HR al 10.5% de fly balls (xFIP < FIP = la tasa de HR regresará a la media); BABIP alto con LOB% bajo indica mala suerte defensiva o situacional; GB% alto reduce HR permitidos y favorece al pitcher en estadios grandes; barrel rate y exit velo miden calidad de contacto permitido; whiff% y K% miden dominancia; xwOBA es el indicador más predictivo de producción ofensiva futura; K/BB > 3.0 indica control élite. Responde ÚNICAMENTE JSON sin markdown ni texto extra:
-{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"estimado":"9.5","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
+{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","probLocal":55,"confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"estimado":"9.5","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
 
   try {
-    console.log("Modelo enviado a Anthropic:", "claude-sonnet-4-6");
+    console.log("Modelo enviado a Anthropic:", MODEL);
     console.log(`[Statcast]  ${aName}:`, aSavant ? "encontrado" : "sin datos");
     console.log(`[Statcast]  ${hName}:`, hSavant ? "encontrado" : "sin datos");
     console.log(`[FanGraphs] ${aName}:`, aFG     ? "encontrado" : "sin datos");
     console.log(`[FanGraphs] ${hName}:`, hFG     ? "encontrado" : "sin datos");
 
     const message = await client.messages.create({
-      model:      "claude-sonnet-4-6",
-      max_tokens: 4096,
-      messages:   [{ role: "user", content: prompt }],
+      model:       MODEL,
+      max_tokens:  4096,
+      temperature: 0,
+      messages:    [{ role: "user", content: prompt }],
     });
 
     const txt = message.content
@@ -642,7 +772,67 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       .map(c => c.text)
       .join("");
 
-    res.json(JSON.parse(txt.replace(/```json|```/g, "").trim()));
+    const analysis = JSON.parse(txt.replace(/```json|```/g, "").trim());
+
+    /* ── EV calculado en código (no por el LLM) ─────────────────── */
+    const mkt = marketProbs(oddsGame, h.team.name, a.team.name);
+    const rawProb = Number(analysis.prediccion?.probLocal);
+    const llmProbHome = rawProb >= 0 && rawProb <= 100 ? rawProb / 100 : null;
+
+    let mercado = null;
+    if (mkt) {
+      const winner     = analysis.prediccion?.ganador ?? "";
+      const winnerIsHome = winner === h.team.name ||
+        (winner && !winner.includes(a.team.name) && h.team.name.includes(winner));
+      const pModelo  = llmProbHome != null ? (winnerIsHome ? llmProbHome : 1 - llmProbHome) : null;
+      const pMercado = winnerIsHome ? mkt.home : mkt.away;
+      mercado = {
+        book:               mkt.book,
+        probMercadoLocal:   Math.round(mkt.home * 1000) / 10,
+        probMercadoVisitante: Math.round(mkt.away * 1000) / 10,
+        probModeloLocal:    llmProbHome != null ? Math.round(llmProbHome * 1000) / 10 : null,
+        evGanadorPct:       pModelo != null ? Math.round((pModelo - pMercado) * 1000) / 10 : null,
+      };
+    }
+    analysis.mercado = mercado;
+    analysis.bullpen = (hFatigue || aFatigue)
+      ? { home: hFatigue, away: aFatigue }
+      : null;
+
+    /* ── Registro para backtest (ver docs/BACKTEST_METHODOLOGY.md) ── */
+    try {
+      const logResult = insertAnalysisLog({
+        game_pk:          gamePk ?? null,
+        game_date:        gameDate ?? null,
+        home_team:        h.team.name,
+        away_team:        a.team.name,
+        logic_version:    LOGIC_VERSION,
+        model:            MODEL,
+        retro,
+        data_quality:     Math.round(dataQuality * 100) / 100,
+        sections_json:    JSON.stringify(sections),
+        odds_json:        oddsGame ? JSON.stringify(oddsGame) : null,
+        market_prob_home: mkt?.home ?? null,
+        market_prob_away: mkt?.away ?? null,
+        llm_prob_home:    llmProbHome,
+        predicted_winner: analysis.prediccion?.ganador ?? null,
+        confianza:        analysis.prediccion?.confianza ?? null,
+        calificacion:     analysis.calificacionGeneral ?? null,
+        total_estimado:   analysis.totalCarreras?.estimado ?? null,
+        total_reco:       analysis.totalCarreras?.recomendacion ?? null,
+        ev_pct:           mercado?.evGanadorPct ?? null,
+        context_json:     JSON.stringify({
+          homeRec: h.rec ?? null, awayRec: a.rec ?? null, venue: venue ?? null,
+          bullpenFatigue: { home: hFatigue, away: aFatigue },
+        }),
+        output_json:      JSON.stringify(analysis),
+      });
+      analysis.analysisId = Number(logResult.lastInsertRowid);
+    } catch (logErr) {
+      console.error("[Log] Error registrando análisis:", logErr.message);
+    }
+
+    res.json(analysis);
   } catch (err) {
     console.error("Error llamando a Anthropic:", err.message);
     res.status(500).json({ error: true });
@@ -660,12 +850,12 @@ app.get("/api/picks", (_req, res) => {
 });
 
 app.post("/api/picks", (req, res) => {
-  const { fecha, partido, tipo, pick, valor, riesgo } = req.body;
+  const { fecha, partido, tipo, pick, valor, riesgo, analysis_id = null } = req.body;
   if (!fecha || !partido || !tipo || !pick) {
     return res.status(400).json({ error: "Faltan campos requeridos." });
   }
   try {
-    const result = insertPick({ fecha, partido, tipo, pick, valor, riesgo });
+    const result = insertPick({ fecha, partido, tipo, pick, valor, riesgo, analysis_id });
     res.status(201).json({ id: Number(result.lastInsertRowid) });
   } catch (err) {
     console.error("Error insertando pick:", err.message);

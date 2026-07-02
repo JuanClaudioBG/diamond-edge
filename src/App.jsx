@@ -114,7 +114,7 @@ export default function DiamondEdge() {
     try {
       const res = await fetch(`${API}/api/analyze`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ home: gd.home, away: gd.away, gamePk: gd.game.gamePk, venue: gd.game.venue?.name }),
+        body: JSON.stringify({ home: gd.home, away: gd.away, gamePk: gd.game.gamePk, venue: gd.game.venue?.name, gameDate: gd.game.gameDate }),
       });
       setAnalysis(await res.json());
     } catch(e) { console.error(e); setAnalysis({ error: true }); }
@@ -129,7 +129,7 @@ export default function DiamondEdge() {
     try {
       await fetch(`${API}/api/picks`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fecha: toDay(), partido, tipo: pick.tipo, pick: pick.pick, valor: pick.valor, riesgo: pick.riesgo }),
+        body: JSON.stringify({ fecha: toDay(), partido, tipo: pick.tipo, pick: pick.pick, valor: pick.valor, riesgo: pick.riesgo, analysis_id: analysis?.analysisId ?? null }),
       });
       loadHistorial();
     } catch(e) { console.error("Error guardando pick:", e); }

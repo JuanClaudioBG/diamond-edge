@@ -76,6 +76,50 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
         </div>
       </div>
 
+      {analysis.mercado && (
+        <div className="acard">
+          <div className="acard-hdr">📈 Modelo vs Mercado ({analysis.mercado.book})</div>
+          <div className="acard-b">
+            <div className="hbk">
+              <span className="hbk-t">Prob. mercado (local, sin vig)</span>
+              <span className="hbk-v">{analysis.mercado.probMercadoLocal}%</span>
+              <span className="hbk-v" />
+              <span className="hbk-t">Prob. modelo (local)</span>
+              <span className="hbk-v">{analysis.mercado.probModeloLocal ?? "–"}%</span>
+              <span className="hbk-v" />
+              <span className="hbk-t">EV del ganador predicho</span>
+              <span className="hbk-v" style={{ color: (analysis.mercado.evGanadorPct ?? 0) > 5 ? "var(--gn)" : (analysis.mercado.evGanadorPct ?? 0) < 0 ? "var(--rd)" : "var(--au)" }}>
+                {analysis.mercado.evGanadorPct != null ? `${analysis.mercado.evGanadorPct > 0 ? "+" : ""}${analysis.mercado.evGanadorPct}%` : "–"}
+              </span>
+              <span className="hbk-v" />
+            </div>
+            <p style={{ fontSize: 10, color: "var(--mu)", marginTop: 8, fontFamily: "var(--fm)" }}>
+              EV calculado por el servidor contra la línea real. Positivo = el modelo ve más probabilidad que el mercado.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {analysis.bullpen && (
+        <div className="acard">
+          <div className="acard-hdr">🧯 Fatiga de Bullpen (experimental)</div>
+          <div className="acard-b">
+            {[["Visitante", analysis.bullpen.away], ["Local", analysis.bullpen.home]].map(([lbl, b]) => (
+              <div key={lbl} style={{ fontSize: 11, color: "var(--dm)", fontFamily: "var(--fm)", padding: "4px 0", lineHeight: 1.6 }}>
+                <span style={{ color: lbl === "Local" ? "var(--gn)" : "var(--cy)" }}>{lbl}:</span>{" "}
+                {b
+                  ? <>Disponibilidad {b.availabilityScore}/100 · Alto leverage {b.highLeverageAvail ?? "–"}/100 · Riesgo fatiga <span style={{ color: b.fatigueRisk > 40 ? "var(--rd)" : "var(--dm)" }}>{b.fatigueRisk}/100</span>
+                      {b.likelyUnavailable?.length > 0 && <> · Prob. fuera: {b.likelyUnavailable.join(", ")}</>}</>
+                  : "sin datos suficientes"}
+              </div>
+            ))}
+            <p style={{ fontSize: 10, color: "var(--mu)", marginTop: 6, fontFamily: "var(--fm)" }}>
+              Indicador informativo (uso últimos 7 días). Aún sin validación contra resultados — no altera los picks.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="acard">
         <div className="acard-hdr">🔢 Total de Carreras</div>
         <div className="acard-b">
