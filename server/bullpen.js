@@ -128,7 +128,10 @@ const fatigueCache = new Map(); // teamId → { data, fetchedAt }
 const FATIGUE_TTL_MS = 60 * 60 * 1000;
 
 export async function getBullpenFatigue(teamId, asOfISO = new Date().toISOString()) {
-  const cached = fatigueCache.get(teamId);
+  /* Cache por equipo Y fecha de corte: un asOf distinto nunca reutiliza
+     datos calculados con otra ventana temporal. */
+  const cacheKey = `${teamId}:${String(asOfISO).slice(0, 10)}`;
+  const cached = fatigueCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < FATIGUE_TTL_MS) return cached.data;
 
   try {
@@ -146,7 +149,7 @@ export async function getBullpenFatigue(teamId, asOfISO = new Date().toISOString
 
     if (!games.length) {
       const data = null; // sin juegos utilizables → sin indicador, no ceros
-      fatigueCache.set(teamId, { data, fetchedAt: Date.now() });
+      fatigueCache.set(cacheKey, { data, fetchedAt: Date.now() });
       return data;
     }
 
@@ -188,7 +191,7 @@ export async function getBullpenFatigue(teamId, asOfISO = new Date().toISOString
       [...relievers.values()],
       { gamesFound: games.length, windowDays: 7 }
     );
-    fatigueCache.set(teamId, { data, fetchedAt: Date.now() });
+    fatigueCache.set(cacheKey, { data, fetchedAt: Date.now() });
     return data;
   } catch (err) {
     console.error("[Bullpen] Error:", err.message);

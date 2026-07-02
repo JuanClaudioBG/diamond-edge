@@ -6,12 +6,20 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { getAllPicks, insertPick, updateResultado, insertAnalysisLog } from "./db.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
+import { americanToProb, devig } from "./backtest/odds-math.js";
+import { verifyPicks, sanitizeTotalNarrative } from "./verify-picks.js";
 
 dotenv.config();
 
 /* Versionado de la lógica: cambiar en cada modificación del prompt o de las
-   fuentes de datos, para que el backtest pueda comparar versiones entre sí. */
-const LOGIC_VERSION = "2026-07-02.1";
+   fuentes de datos, para que el backtest pueda comparar versiones entre sí.
+   Historial: .1 = infraestructura inicial · .2 = match de odds por commence_time
+   (dobles carteleras), clamp de probabilidad, retro desconocido = null ·
+   .3 = fix cuotas inventadas: ambos lados de RL/Total en el prompt, regla de
+   cuotas exactas, verificación de picks en código (verify-picks.js) ·
+   .4 = sanitización financiera de razones en RL/Total/Props y separación
+   cuota-verificada ≠ valor-verificado (SEÑAL en vez de VALOR sin EV). */
+const LOGIC_VERSION = "2026-07-02.4";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -429,20 +437,31 @@ function normTeam(name) {
   return String(name).toLowerCase().replace(/[^a-z]/g, "");
 }
 
-async function getOddsForGame(homeTeamName, awayTeamName) {
+async function getOddsForGame(homeTeamName, awayTeamName, gameDate = null) {
   const games = await getOddsCache();
   const hn = normTeam(homeTeamName);
   const an = normTeam(awayTeamName);
-  return (
-    games.find(g => normTeam(g.home_team) === hn && normTeam(g.away_team) === an) ??
-    games.find(g => normTeam(g.home_team).includes(hn.slice(-7)) && normTeam(g.away_team).includes(an.slice(-7))) ??
-    null
-  );
+  let candidates = games.filter(g => normTeam(g.home_team) === hn && normTeam(g.away_team) === an);
+  if (!candidates.length) {
+    candidates = games.filter(g =>
+      normTeam(g.home_team).includes(hn.slice(-7)) && normTeam(g.away_team).includes(an.slice(-7)));
+  }
+  if (!candidates.length) return null;
+  /* Dobles carteleras: mismo par de equipos dos veces el mismo día.
+     Con gameDate elegimos el juego cuyo commence_time esté más cerca;
+     si difiere > 4 h del inicio real, ninguna línea corresponde a este juego. */
+  if (gameDate && candidates.length >= 1) {
+    const target = new Date(gameDate).getTime();
+    const scored = candidates
+      .map(g => ({ g, diff: Math.abs(new Date(g.commence_time).getTime() - target) }))
+      .sort((x, y) => x.diff - y.diff);
+    return scored[0].diff <= 4 * 60 * 60 * 1000 ? scored[0].g : null;
+  }
+  return candidates[0];
 }
 
-function americanToProb(odds) {
-  const o = Number(odds);
-  return o >= 0 ? 100 / (o + 100) : -o / (-o + 100);
+function getOddsFetchedAt() {
+  return oddsCache.fetchedAt ? new Date(oddsCache.fetchedAt).toISOString() : null;
 }
 
 /** Probabilidades implícitas sin vig del moneyline. null si no hay línea. */
@@ -454,10 +473,10 @@ function marketProbs(oddsGame, homeTeamName, awayTeamName) {
   if (!h2h) return null;
   const hOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(homeTeamName));
   const aOut = h2h.outcomes.find(o => normTeam(o.name) === normTeam(awayTeamName));
-  if (!hOut || !aOut) return null;
-  const hp = americanToProb(hOut.price), ap = americanToProb(aOut.price);
-  const tot = hp + ap;
-  return { home: hp / tot, away: ap / tot, book: bk.title ?? bk.key, homePrice: hOut.price, awayPrice: aOut.price };
+  if (!hOut || !aOut) return null;                       // sin ambos lados no hay prob justa
+  const dv = devig(hOut.price, aOut.price);
+  if (!dv) return null;
+  return { home: dv.a, away: dv.b, book: bk.title ?? bk.key, homePrice: hOut.price, awayPrice: aOut.price };
 }
 
 function fmtOddsSection(oddsGame, homeTeamName, awayTeamName) {
@@ -480,13 +499,23 @@ function fmtOddsSection(oddsGame, homeTeamName, awayTeamName) {
       lines.push(`Moneyline: Vis ${fmt(aOut.price)} (prob real ${apV}%) | Loc ${fmt(hOut.price)} (prob real ${hpV}%)`);
     }
   }
+  const fp = (p) => (p > 0 ? "+" : "") + p;
   if (spreads) {
+    /* AMBOS lados con su cuota exacta — cada lado tiene precio propio */
     const aOut = spreads.outcomes.find(o => normTeam(o.name) === normTeam(awayTeamName));
-    if (aOut) lines.push(`Run Line: Vis ${aOut.point > 0 ? "+" : ""}${aOut.point} (${aOut.price > 0 ? "+" : ""}${aOut.price})`);
+    const hOut = spreads.outcomes.find(o => normTeam(o.name) === normTeam(homeTeamName));
+    const parts = [];
+    if (aOut?.price != null) parts.push(`Vis ${fp(aOut.point)} (${fp(aOut.price)})`);
+    if (hOut?.price != null) parts.push(`Loc ${fp(hOut.point)} (${fp(hOut.price)})`);
+    if (parts.length) lines.push(`Run Line: ${parts.join(" | ")}${parts.length < 2 ? " — el otro lado NO tiene cuota disponible" : ""}`);
   }
   if (totals) {
-    const over = totals.outcomes.find(o => o.name === "Over");
-    if (over) lines.push(`Total: ${over.point} | Over ${over.price > 0 ? "+" : ""}${over.price}`);
+    const over  = totals.outcomes.find(o => o.name === "Over");
+    const under = totals.outcomes.find(o => o.name === "Under");
+    const parts = [];
+    if (over?.price != null)  parts.push(`Over ${over.point} (${fp(over.price)})`);
+    if (under?.price != null) parts.push(`Under ${under.point} (${fp(under.price)})`);
+    if (parts.length) lines.push(`Total: ${parts.join(" | ")}${parts.length < 2 ? " — el otro lado NO tiene cuota disponible" : ""}`);
   }
 
   return `LÍNEAS DE MERCADO (${bk.title ?? bk.key}):\n${lines.join("\n") || "sin líneas disponibles"}`;
@@ -591,7 +620,7 @@ app.post("/api/analyze", async (req, res) => {
     getFangraphsMap(),
     a.prob?.id ? fetch(`${MLB_BASE}/people/${a.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
     h.prob?.id ? fetch(`${MLB_BASE}/people/${h.prob.id}/stats?stats=statSplits&group=pitching&season=${season}&sitCodes=vl,vr`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
-    getOddsForGame(h.team.name, a.team.name),
+    getOddsForGame(h.team.name, a.team.name, gameDate),
     getBullpenFatigue(h.team.id).catch(() => null),
     getBullpenFatigue(a.team.id).catch(() => null),
   ]);
@@ -668,6 +697,7 @@ app.post("/api/analyze", async (req, res) => {
 
   /* Calidad de datos: fracción de fuentes que llegaron con datos reales */
   const sections = {
+    pitcherAway:   !!a.prob?.id,     pitcherHome:  !!h.prob?.id,
     savantAway:    !!aSavant,        savantHome:   !!hSavant,
     fangraphsAway: !!aFG,            fangraphsHome: !!hFG,
     weather:       !!weather,        odds:          !!oddsGame,
@@ -680,7 +710,9 @@ app.post("/api/analyze", async (req, res) => {
     fatigueAway:   !!aFatigue,       fatigueHome:  !!hFatigue,
   };
   const dataQuality = Object.values(sections).filter(Boolean).length / Object.keys(sections).length;
-  const retro = gameDate ? (Date.now() > new Date(gameDate).getTime() ? 1 : 0) : 0;
+  /* retro: 1 = análisis posterior al inicio (excluido de métricas prospectivas),
+     0 = prospectivo confirmado, null = sin gameDate → NO se asume prospectivo. */
+  const retro = gameDate ? (Date.now() > new Date(gameDate).getTime() ? 1 : 0) : null;
 
   console.log(`[Weather] ${venue ?? "sin venue"}:`, weather ?? "sin datos");
   console.log(`[Odds]    ${a.team.name} @ ${h.team.name}:`, oddsGame ? "encontrado" : "sin datos");
@@ -743,6 +775,10 @@ Evalúa estos 4 factores antes de asignar valor a un Total:
   4. Convergencia entre Statcast de bateadores (xwOBA, barrel%) y el perfil del pitcher rival
 Si se cumplen 3 o 4 factores → puedes marcar el Total como VALOR ALTO.
 Si se cumplen menos de 3 → máximo VALOR MEDIO, y añade "⚠️ Total con incertidumbre alta" en el campo razon del pick.
+Al reportar los factores usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido: solo los factores plenamente cumplidos suman para la regla de 3 (nunca describas 2 cumplidos + 1 parcial como "3 de 4 factores cumplidos").
+
+REGLA DE CUOTAS EXACTAS (obligatoria):
+Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en estos datos: nunca escribas una línea numérica estimada; describe el prop cualitativamente (p.ej. "Over strikeouts del abridor") y su justificación.
 
 REGLA DE SOPORTE OFENSIVO:
 Si el pitcher abridor tiene métricas dominantes (xERA bajo, K/9 alto) PERO su equipo tiene ofensiva débil en temporada (OPS por debajo de .700 o entre los peores del partido), NO asumas automáticamente que el dominio del pitcher se traduce en victoria del equipo. Separa el análisis: "el pitcher puede ganar el duelo individual" vs "el equipo puede ganar el partido". En estos casos, el Moneyline del equipo con el pitcher dominante debe bajar de confianza si su ofensiva no respalda, incluso si el pitcheo se ve favorable.
@@ -774,10 +810,24 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
 
     const analysis = JSON.parse(txt.replace(/```json|```/g, "").trim());
 
+    /* ── Verificación de picks contra el snapshot de odds (en código):
+       RL/Total solo con cuota exacta del mismo lado; props → "para revisar" ── */
+    analysis.picks = verifyPicks(analysis.picks, oddsGame, h.team.name, a.team.name);
+    analysis.totalCarreras = sanitizeTotalNarrative(analysis.totalCarreras);
+
     /* ── EV calculado en código (no por el LLM) ─────────────────── */
     const mkt = marketProbs(oddsGame, h.team.name, a.team.name);
+    /* Validación: probabilidad numérica en [0,100]; extremos <1% o >99% son
+       sospechosos en MLB (nadie es 99% en beisbol) → se acotan y se advierte. */
     const rawProb = Number(analysis.prediccion?.probLocal);
-    const llmProbHome = rawProb >= 0 && rawProb <= 100 ? rawProb / 100 : null;
+    let llmProbHome = Number.isFinite(rawProb) && rawProb >= 0 && rawProb <= 100 ? rawProb / 100 : null;
+    if (llmProbHome != null && (llmProbHome < 0.01 || llmProbHome > 0.99)) {
+      console.warn(`[Prob] probLocal extrema (${rawProb}) — acotada a [1,99]`);
+      llmProbHome = Math.min(0.99, Math.max(0.01, llmProbHome));
+    }
+    if (llmProbHome == null) {
+      console.warn(`[Prob] probLocal inválida o ausente: ${JSON.stringify(analysis.prediccion?.probLocal)}`);
+    }
 
     let mercado = null;
     if (mkt) {
@@ -812,6 +862,7 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
         data_quality:     Math.round(dataQuality * 100) / 100,
         sections_json:    JSON.stringify(sections),
         odds_json:        oddsGame ? JSON.stringify(oddsGame) : null,
+        odds_fetched_at:  oddsGame ? getOddsFetchedAt() : null,
         market_prob_home: mkt?.home ?? null,
         market_prob_away: mkt?.away ?? null,
         llm_prob_home:    llmProbHome,

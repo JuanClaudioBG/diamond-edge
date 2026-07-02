@@ -1,6 +1,20 @@
 # Resultados de Backtest — Diamond Edge
 
-**Última actualización:** 2026-07-02
+**Última actualización:** 2026-07-02 (segunda auditoría — infraestructura validada y operable)
+
+## Muestra prospectiva: INICIADA 2026-07-02
+
+| Métrica | Valor |
+|---|---|
+| Análisis prospectivos registrados | 5 (`LOGIC_VERSION 2026-07-02.1`) |
+| Liquidados | 1 (Marlins @ Rockies → ganó Colorado; el modelo predijo Miami: **fallo**, −1 u a cuota congelada) |
+| Pendientes de liquidar | 4 |
+| Picks enlazados vía `analysis_id` | 4 |
+| Retrospectivos / sin clasificar | 0 / 0 |
+
+Con n=1 **ninguna métrica significa nada** (evaluate lo marca `⚠ n<30`). El criterio de éxito sigue siendo el predefinido: ≥300 predicciones prospectivas y Brier < Brier del mercado. Regenerar con `npm run settle && npm run evaluate`.
+
+Nota de versión: la lógica pasó a `2026-07-02.2` (match de odds por `commence_time` para dobles carteleras, clamp de probabilidades extremas, `retro=NULL` cuando falta gameDate). Comparar versiones con `--logic-version`.
 
 ## Estado: sin backtest histórico válido posible
 

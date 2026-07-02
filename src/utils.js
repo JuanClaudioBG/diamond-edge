@@ -1,5 +1,10 @@
 export const MLB = "https://statsapi.mlb.com/api/v1";
-export const toDay = () => new Date().toISOString().split("T")[0];
+/* Fecha LOCAL (no UTC): con toISOString(), después de las ~18:00 en CDMX
+   la "fecha de hoy" era la de mañana — corría schedule y picks un día. */
+export const toDay = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 export const fmtTime = (s) => {
   try { return new Date(s).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", hour12: true }); }

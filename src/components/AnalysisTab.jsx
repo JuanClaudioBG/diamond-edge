@@ -132,22 +132,50 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
         </div>
       </div>
 
-      <div className="acard">
-        <div className="acard-hdr">💰 Picks con Valor</div>
-        <div className="acard-b">
-          {analysis.picks?.map((pk, i) => (
-            <div key={i} className="pick">
-              <div className="pick-top">
-                <span className="pick-tp">{pk.tipo}</span>
-                <span className={`pv ${pk.valor}`}>VALOR {pk.valor}</span>
-              </div>
-              <div className="pick-tx">{pk.pick}</div>
-              <div className="pick-rs">{pk.razon}</div>
-              <button className="padd" onClick={() => onAddPick(pk)}>+ PARLAY</button>
+      {(() => {
+        const all      = analysis.picks ?? [];
+        const oficiales = all.filter(pk => pk.tipo !== "Prop para revisar");
+        const revisar   = all.filter(pk => pk.tipo === "Prop para revisar");
+        const fmtCuota  = (c) => (c > 0 ? `+${c}` : `${c}`);
+        const chip      = (v) => (v === "SIN CUOTA" || v === "SIN VERIFICAR" || String(v).startsWith("SEÑAL")) ? v : `VALOR ${v}`;
+        const pvCls     = (v) => v === "SEÑAL ALTA" ? "ALTO" : v === "SEÑAL MEDIA" ? "MEDIO" : v === "SEÑAL BAJA" ? "BAJO" : v;
+        const Pick = ({ pk }) => (
+          <div className="pick">
+            <div className="pick-top">
+              <span className="pick-tp">{pk.tipo}</span>
+              <span className={`pv ${pvCls(pk.valor)}`}>{chip(pk.valor)}</span>
             </div>
-          ))}
-        </div>
-      </div>
+            <div className="pick-tx">
+              {pk.pick}
+              {pk.cuotaReal != null && <span style={{ color: "var(--cy)", fontFamily: "var(--fm)", fontSize: 12 }}> · cuota real {fmtCuota(pk.cuotaReal)}</span>}
+              {pk.verificado === false && pk.tipo !== "Prop para revisar" && <span style={{ color: "var(--au)", fontFamily: "var(--fm)", fontSize: 10 }}> · cuota no disponible</span>}
+            </div>
+            <div className="pick-rs">{pk.razon}</div>
+            <button className="padd" onClick={() => onAddPick(pk)}>+ PARLAY</button>
+          </div>
+        );
+        return (
+          <>
+            <div className="acard">
+              <div className="acard-hdr">💰 Picks y Señales</div>
+              <div className="acard-b">
+                {oficiales.map((pk, i) => <Pick key={i} pk={pk} />)}
+              </div>
+            </div>
+            {revisar.length > 0 && (
+              <div className="acard">
+                <div className="acard-hdr">🔍 Props para Revisar</div>
+                <div className="acard-b">
+                  <p style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", marginBottom: 8 }}>
+                    Línea y cuota no verificadas. No entra a ROI ni a la muestra oficial.
+                  </p>
+                  {revisar.map((pk, i) => <Pick key={i} pk={pk} />)}
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

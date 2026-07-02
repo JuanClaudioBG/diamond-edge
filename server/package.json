@@ -8,7 +8,11 @@
     "dev": "node --watch index.js",
     "test": "node --test",
     "settle": "node backtest/settle.js",
-    "evaluate": "node backtest/evaluate.js"
+    "evaluate": "node backtest/evaluate.js",
+    "healthcheck": "node backtest/healthcheck.js",
+    "audit-db": "node backtest/audit-db.js",
+    "backup-db": "node backtest/backup-db.js",
+    "list-backups": "node backtest/backup-db.js --list"
   },
   "keywords": [],
   "author": "",

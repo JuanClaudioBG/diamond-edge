@@ -16,6 +16,7 @@ dist-ssr
 server/.env
 server/node_modules
 server/picks.db
+server/backups/
 
 # Editor directories and files
 .vscode/*

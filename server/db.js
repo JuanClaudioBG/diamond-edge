@@ -48,8 +48,9 @@ db.exec(`
   )
 `);
 
-/* Migración retrocompatible: enlaza cada pick con su análisis de origen */
+/* Migraciones retrocompatibles (ALTER falla silenciosamente si ya existe) */
 try { db.exec("ALTER TABLE picks ADD COLUMN analysis_id INTEGER"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE analysis_log ADD COLUMN odds_fetched_at TEXT"); } catch { /* ya existe */ }
 
 export const getAllPicks = () =>
   db.prepare("SELECT * FROM picks ORDER BY fecha_creacion DESC").all();
@@ -67,12 +68,12 @@ export const insertAnalysisLog = (row) =>
   db.prepare(`
     INSERT INTO analysis_log (
       game_pk, game_date, home_team, away_team, logic_version, model, retro,
-      data_quality, sections_json, odds_json, market_prob_home, market_prob_away,
+      data_quality, sections_json, odds_json, odds_fetched_at, market_prob_home, market_prob_away,
       llm_prob_home, predicted_winner, confianza, calificacion,
       total_estimado, total_reco, ev_pct, context_json, output_json
     ) VALUES (
       @game_pk, @game_date, @home_team, @away_team, @logic_version, @model, @retro,
-      @data_quality, @sections_json, @odds_json, @market_prob_home, @market_prob_away,
+      @data_quality, @sections_json, @odds_json, @odds_fetched_at, @market_prob_home, @market_prob_away,
       @llm_prob_home, @predicted_winner, @confianza, @calificacion,
       @total_estimado, @total_reco, @ev_pct, @context_json, @output_json
     )
