@@ -8,6 +8,7 @@ import { getAllPicks, insertPick, updateResultado, insertAnalysisLog } from "./d
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
 import { verifyPicks, sanitizeTotalNarrative } from "./verify-picks.js";
+import { getStrikeoutRadar } from "./radar.js";
 
 dotenv.config();
 
@@ -848,6 +849,35 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     analysis.bullpen = (hFatigue || aFatigue)
       ? { home: hFatigue, away: aFatigue }
       : null;
+
+    /* ── Radar de Ponches: informativo, calculado en código con game logs
+       reales. NO entra al prompt (cero cambio de modelo), ni a ROI/CLV. ── */
+    try {
+      /* K% ofensivo del rival: SO/PA de team hitting (normalizado por PA).
+         El perfil Savant por equipo no es usable: su CSV no trae team_id. */
+      const teamKPct = (hit) => {
+        const so = Number(hit?.strikeOuts), pa = Number(hit?.plateAppearances);
+        return Number.isFinite(so) && Number.isFinite(pa) && pa > 0
+          ? Math.round((so / pa) * 1000) / 10
+          : null;
+      };
+      const [aRadar, hRadar] = await Promise.all([
+        a.prob?.id ? getStrikeoutRadar({
+          pitcherId: a.prob.id, name: aName, seasonStats: a.ps,
+          savantRow: aSavant, fgRow: aFG, oddsGame,
+          rival: { teamName: h.team.name, kPct: teamKPct(h.hit), lineupConfirmed: hOrder.length > 0 },
+        }) : Promise.resolve(null),
+        h.prob?.id ? getStrikeoutRadar({
+          pitcherId: h.prob.id, name: hName, seasonStats: h.ps,
+          savantRow: hSavant, fgRow: hFG, oddsGame,
+          rival: { teamName: a.team.name, kPct: teamKPct(a.hit), lineupConfirmed: aOrder.length > 0 },
+        }) : Promise.resolve(null),
+      ]);
+      analysis.radar = (aRadar || hRadar) ? { away: aRadar, home: hRadar } : null;
+    } catch (radarErr) {
+      console.error("[Radar] Error:", radarErr.message);
+      analysis.radar = null;
+    }
 
     /* ── Registro para backtest (ver docs/BACKTEST_METHODOLOGY.md) ── */
     try {

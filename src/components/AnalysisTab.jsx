@@ -120,6 +120,54 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
         </div>
       )}
 
+      {analysis.radar && (
+        <div className="acard">
+          <div className="acard-hdr">🎯 Radar de Ponches</div>
+          <div className="acard-b">
+            {[analysis.radar.away, analysis.radar.home].filter(Boolean).map((r, i) => {
+              const k = (v) => (v == null ? "–" : v);
+              return (
+                <div key={i} style={{ padding: "6px 0", borderBottom: i === 0 && analysis.radar.home && analysis.radar.away ? "1px solid var(--b1)" : "none", fontFamily: "var(--fm)", fontSize: 11, lineHeight: 1.7, color: "var(--dm)" }}>
+                  {r.insufficient ? (
+                    <><span style={{ color: "var(--tx)" }}>{r.name}</span> — Muestra insuficiente: {r.reason}</>
+                  ) : !r.radarQualified ? (
+                    <><span style={{ color: "var(--tx)" }}>{r.name}</span> — <span style={{ color: "var(--au)" }}>{r.compactNote}</span> <span style={{ color: "var(--mu)" }}>({r.score}/10 · aperturas válidas {r.sample.validKLast10}/{Math.min(r.sample.starts, 10)})</span></>
+                  ) : (
+                    <>
+                      <div>
+                        <span style={{ color: "var(--tx)", fontWeight: 600 }}>{r.name}</span>
+                        {" — "}
+                        <span style={{ color: "var(--gn)" }}>Perfil Radar calificado {r.score}/10</span>
+                        <span style={{ color: "var(--mu)" }}> · aperturas válidas {r.sample.validKLast10}/{Math.min(r.sample.starts, 10)} (cobertura {Math.round(r.sample.coverage * 100)}%)</span>
+                      </div>
+                      <div>Últimas 5: <span style={{ color: "var(--cy)" }}>{r.sample.last5Ks.map(k).join(" · ")}</span>
+                        {"  ·  "}Últimas 10: {r.sample.last10Ks.map(k).join(" ")}</div>
+                      <div>Prom {k(r.sample.avgK)} · Mediana {k(r.sample.medianK)} · {k(r.sample.avgIP)} IP/apertura{r.sample.avgPitches != null ? ` · ${r.sample.avgPitches} pitches` : ""}</div>
+                      <div>Últimas 10 (válidas {r.sample.validKLast10}): {[4, 5, 6, 7, 8].map(t => `${t}+ K: ${r.thresholds[t].hits}/${r.thresholds[t].n}`).join("  ·  ")}</div>
+                      <div>ERA {k(r.season.era)} · xERA {k(r.season.xera)} · xFIP {k(r.season.xfip)} · K% {k(r.season.kPct)} · Whiff% {k(r.season.whiffPct)}</div>
+                      {r.rival && <div>Rival: {r.rival.teamName} · K% ofensivo {k(r.rival.kPct)} · lineup {r.rival.lineupConfirmed ? "confirmado" : "no confirmado"}</div>}
+                      {r.line ? (
+                        <div style={{ color: "var(--cy)" }}>
+                          Línea {r.line.point} ({r.line.bookTitle}{r.line.lastUpdate ? `, ${r.line.lastUpdate}` : ""})
+                          {r.line.over && ` · Over ${r.line.over.price > 0 ? "+" : ""}${r.line.over.price}`}
+                          {r.line.under && ` · Under ${r.line.under.price > 0 ? "+" : ""}${r.line.under.price}`}
+                          {!r.line.complete && " · ⚠ solo un lado verificado"}
+                          {r.line.vsLine?.last10 && ` — habría superado una línea de ${r.line.point} en ${r.line.vsLine.last10.hits} de sus últimas ${r.line.vsLine.last10.n} aperturas`}
+                          {r.line.vsLine?.season && ` (temporada: ${r.line.vsLine.season.hits}/${r.line.vsLine.season.n})`}
+                          <div style={{ color: "var(--mu)", fontSize: 10 }}>SEÑAL · {r.line.nota}</div>
+                        </div>
+                      ) : (
+                        <div style={{ color: "var(--au)", fontSize: 10 }}>Línea no disponible · PROP PARA REVISAR — Análisis informativo. No entra a ROI, CLV ni a la muestra oficial.</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="acard">
         <div className="acard-hdr">🔢 Total de Carreras</div>
         <div className="acard-b">
