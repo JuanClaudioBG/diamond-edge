@@ -58,6 +58,18 @@ npm run test:server   # 42 tests: matemática de odds, métricas, dedup, ROI, bu
 
 **Versiones.** Cualquier cambio de prompt, fuentes o reglas ⇒ bump de `LOGIC_VERSION` (historial en comentario de `server/index.js`). `evaluate` advierte cuando hay mezcla de versiones en la muestra.
 
+### `closing_lines` (una fila por intento de captura de cierre)
+
+| Campo | Significado |
+|---|---|
+| identidad lógica | `game_pk + book_key + market` — nunca solo `game_pk` (distintos análisis pueden usar books distintos) |
+| `capture_status` | `valid_close` (única que alimenta CLV) · `early_snapshot` (>30 min antes, auditoría) · `post_start_invalid` · `stale` (last_update >15 min viejo o ausente) · `book_missing` · `market_missing` · `api_error` · `game_postponed` |
+| `minutes_before_start` | contra el horario **releído** de MLB Schedule al capturar, no el congelado |
+| `staleness_minutes` | `captured_at − book_last_update`; umbral stale = 15 min |
+| `odds_json` | snapshot del juego en el feed de cierre — **`analysis_log.odds_json` es inmutable y jamás se toca** |
+
+**Políticas CLV.** Mismo book y mismo mercado obligatorios (sin fallback entre casas). Los intentos fallidos se conservan, no se sobrescriben. Idempotencia por **duplicado exacto** (mismo estado + mismo `book_last_update` + mismas cuotas → no se inserta); una captura válida **más cercana al inicio** que la mejor existente sí se inserta — se conservan múltiples snapshots y el cierre principal es el `valid_close` con menor `minutes_before_start` (empate → `captured_at` más reciente); `early_snapshot`/`post_start_invalid`/`stale`/`api_error` jamás ganan la selección. `post_start_invalid` registrado no se reintenta; `game_postponed` se reintenta solo en días posteriores. CLV NULL se excluye y se cuenta — nunca se imputa. Retrospectivos jamás tienen CLV. Terminología: "línea de entrada" (momento del análisis) ≠ "apertura" (no existe fuente de apertura) ≠ "línea de cierre".
+
 ## Señales de posible leakage (revisar si aparecen)
 
 1. `audit-db` reporta "marcados prospectivos pero creados DESPUÉS del inicio" → bug del reloj o de `gameDate`.

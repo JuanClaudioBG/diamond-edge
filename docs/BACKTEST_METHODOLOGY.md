@@ -63,6 +63,26 @@ node --test                        # suite de pruebas
 
 Un experimento = (`logic_version`, conjunto de filas del log). Como los inputs (`sections_json`, `odds_json`, `context_json`, `output_json`) están congelados, cualquier métrica es recomputable bit a bit. Comparar dos versiones = correr `evaluate.js` filtrado por cada `logic_version` sobre el mismo rango de fechas.
 
+## Closing Line Value (CLV)
+
+**Terminología.** *Línea de entrada* = la cuota congelada en `analysis_log` al momento del análisis (NO es la apertura del mercado; no existe fuente de apertura). *Línea de cierre* = la cuota del **mismo sportsbook y mismo mercado** capturada dentro de la ventana [inicio − 30 min, inicio].
+
+**Fórmula.** Con probabilidades **sin vig en ambos extremos** (nunca mezclar con implícitas brutas):
+
+```
+CLV (puntos de probabilidad) = close_prob_nv(lado seleccionado) − entry_prob_nv(lado seleccionado)
+```
+
+Ejemplo canónico: entrada −110/−110 → 50.0% sin vig. Cierre −125/+105 → brutas 55.556%/48.780% (suma 104.336%) → sin vig 53.247%/46.753%. **CLV del favorito = +3.247 pp** (usar la bruta 55.556% daría un +5.6 pp incorrecto).
+
+**Reglas de validez.** CLV queda `NULL` (excluido y contado, jamás imputado) cuando: el book de entrada no está en el cierre (nunca se usa otro book), falta un lado del mercado, la captura fue posterior al inicio (`post_start_invalid`), el `last_update` del book es > 15 min más viejo que la captura (`stale`) o está ausente, la captura quedó fuera de la ventana de 30 min (`early_snapshot` — se guarda para auditoría, no es cierre), el juego fue pospuesto, o el análisis es retrospectivo.
+
+**Almacenamiento.** Tabla `closing_lines` (identidad lógica `game_pk + book_key + market`), independiente e inmutable respecto a `analysis_log.odds_json`. Los intentos fallidos y snapshots tempranos se conservan con su `capture_status` para auditoría. Reanálisis del mismo juego y book comparten la misma línea de cierre pero cada análisis conserva su CLV individual (el reporte principal deduplica al snapshot más reciente; `--all-snapshots` audita todos).
+
+**Operación.** Manual: `npm run close` **~10-15 min antes** de cada tanda de juegos (1 crédito de Odds API por corrida, mercado h2h de todos los juegos en un request). Una corrida a T−45 queda como `early_snapshot` (ensayo/auditoría), no como cierre válido. Pueden conservarse múltiples snapshots válidos de la misma identidad: evaluate selecciona el `valid_close` con menor `minutes_before_start` (empate → `captured_at` más reciente); la idempotencia solo bloquea duplicados exactos (mismo `book_last_update` + mismas cuotas + mismo estado), nunca una línea más cercana al inicio. `--dry-run` muestra qué haría sin escribir un byte. El horario del juego se relee de MLB Schedule al capturar — cambios de horario y dobles carteleras se resuelven contra el horario vigente, no el congelado.
+
+**Qué demuestra y qué no.** CLV positivo sostenido = las entradas anticipan información que el mercado incorpora al cierre; converge mucho más rápido que el ROI (no depende del resultado del juego). **No** demuestra rentabilidad (el vig puede absorber un CLV pequeño), no aplica a Props/Run Line/Totales (sin líneas verificadas), y con n<30 es ruido — `evaluate` lo marca.
+
 ## Criterio de éxito (predefinido, para evitar racionalización posterior)
 
 Con ≥ 300 predicciones no-retro liquidadas:

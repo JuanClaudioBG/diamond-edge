@@ -9,6 +9,7 @@
     "test": "node --test",
     "settle": "node backtest/settle.js",
     "evaluate": "node backtest/evaluate.js",
+    "close": "node backtest/capture-closing.js",
     "healthcheck": "node backtest/healthcheck.js",
     "audit-db": "node backtest/audit-db.js",
     "backup-db": "node backtest/backup-db.js",

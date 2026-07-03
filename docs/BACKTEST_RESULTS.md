@@ -49,7 +49,7 @@ Fuente: `picks.db`, 94 picks (2026-05-31 → 2026-07-01), 86 con resultado marca
 |---|---|---|
 | Brier, log loss, calibración | sin probabilidad numérica histórica | 2026-07-02 (campo `probLocal` + `analysis_log`) |
 | ROI, yield, unidades, drawdown | sin cuota al momento del pick | 2026-07-02 (`odds_json` por análisis) |
-| CLV | sin línea de cierre | pendiente (roadmap P1: job de captura al primer pitch) |
+| CLV | sin línea de cierre | **2026-07-03** — `npm run close` manual antes de cada tanda de juegos (tabla `closing_lines`; cierre válido = 0-30 min antes del inicio, mismo book y mercado que la entrada; fórmula y limitaciones en `BACKTEST_METHODOLOGY.md`) |
 | Favorito vs underdog, rangos de odds/edge | sin cuotas históricas | 2026-07-02 |
 | Comparación vs baselines | sin registro reproducible | 2026-07-02 (`evaluate.js`) |
 

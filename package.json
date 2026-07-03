@@ -12,6 +12,7 @@
     "audit-db": "npm --prefix server run audit-db",
     "settle": "npm --prefix server run settle",
     "evaluate": "npm --prefix server run evaluate",
+    "close": "npm --prefix server run close --",
     "backup-db": "npm --prefix server run backup-db",
     "list-backups": "npm --prefix server run list-backups",
     "test:server": "npm --prefix server test"

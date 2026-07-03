@@ -76,6 +76,30 @@ oldPending ? warn(`${oldPending} juegos terminaron hace >24h sin liquidar — co
 const lastSettle = q("SELECT MAX(created_at) t FROM analysis_log WHERE resultado IS NOT NULL").t;
 console.log(`  último análisis liquidado (created_at): ${lastSettle ?? "ninguno aún"}`);
 
+/* ── Closing lines (CLV) ─────────────────────────────────────────── */
+console.log("\n── Líneas de cierre (CLV) ──");
+try {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const needed = db.prepare(
+    "SELECT DISTINCT game_pk FROM analysis_log WHERE retro = 0 AND game_pk IS NOT NULL AND substr(game_date,1,10) = ?"
+  ).all(yesterday);
+  if (!needed.length) {
+    ok(`sin juegos prospectivos ayer (${yesterday}) — nada que cerrar`);
+  } else {
+    const stat = (status) => db.prepare(
+      `SELECT COUNT(DISTINCT game_pk) n FROM closing_lines WHERE capture_status = ? AND game_pk IN (SELECT DISTINCT game_pk FROM analysis_log WHERE retro = 0 AND substr(game_date,1,10) = ?)`
+    ).get(status, yesterday).n;
+    const valid = stat("valid_close");
+    const cov   = valid / needed.length;
+    console.log(`  juegos de ayer que requerían cierre: ${needed.length} · válidos: ${valid} · cobertura: ${(cov * 100).toFixed(0)}%`);
+    const detail = { stale: stat("stale"), post_start: stat("post_start_invalid"), book_missing: stat("book_missing"), market_missing: stat("market_missing"), api_error: stat("api_error"), pospuestos: stat("game_postponed") };
+    const parts = Object.entries(detail).filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`);
+    if (parts.length) console.log(`  incidencias: ${parts.join(" · ")}`);
+    if (valid < needed.length) warn(`${needed.length - valid} cierres faltantes ayer — CLV NULL para esos juegos (no se inventan líneas). Corre npm run close antes de cada tanda de juegos.`);
+    else ok("cobertura de cierre completa ayer");
+  }
+} catch (e) { warn(`no se pudo evaluar cobertura de cierres: ${e.message}`); }
+
 /* ── Fuentes externas (conectividad real) ────────────────────────── */
 console.log("\n── Fuentes externas ──");
 const probe = async (name, url, checkFn) => {

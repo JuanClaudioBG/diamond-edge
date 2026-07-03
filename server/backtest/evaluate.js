@@ -22,8 +22,9 @@
  *  - Exportar no sobrescribe archivos existentes sin avisar.
  */
 import { writeFileSync, existsSync } from "fs";
-import { getSettledAnalyses } from "../db.js";
+import { getSettledAnalyses, getAllAnalyses, getAllClosingLines } from "../db.js";
 import { unitProfit } from "./odds-math.js";
+import { computeClvRows } from "./clv.js";
 
 /* ── CLI args ────────────────────────────────────────────────────── */
 const args = {};
@@ -183,6 +184,40 @@ export function roiReport(rows) {
   };
 }
 
+/* ── CLV (no requiere liquidación — solo entrada, cierre y prospectividad) ── */
+export function clvSummary(clvRows) {
+  const computable = clvRows.filter(r => r.clv != null);
+  const reasons = {};
+  for (const r of clvRows.filter(r => r.clv == null)) {
+    reasons[r.reason] = (reasons[r.reason] ?? 0) + 1;
+  }
+  if (!computable.length) return { n: 0, candidatos: clvRows.length, reasons };
+  const vals = computable.map(r => r.clv).sort((a, b) => a - b);
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  const mid = Math.floor(vals.length / 2);
+  const median = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+  const byGroup = (keyFn) => {
+    const g = {};
+    for (const r of computable) {
+      const k = keyFn(r) ?? "?";
+      if (!g[k]) g[k] = { n: 0, sum: 0 };
+      g[k].n++; g[k].sum += r.clv;
+    }
+    return Object.fromEntries(Object.entries(g).map(([k, v]) => [k, { n: v.n, mean: v.sum / v.n }]));
+  };
+  return {
+    n: computable.length,
+    candidatos: clvRows.length,
+    cobertura: computable.length / clvRows.length,
+    mean, median,
+    pctPositivo: computable.filter(r => r.clv > 0).length / computable.length,
+    pctNegativo: computable.filter(r => r.clv < 0).length / computable.length,
+    porVersion: byGroup(r => r.logicVersion),
+    porBook:    byGroup(r => r.book),
+    reasons,
+  };
+}
+
 /* ── Reporte ─────────────────────────────────────────────────────── */
 function fmtPct(x) { return x == null ? "–" : (x * 100).toFixed(1) + "%"; }
 function fmtNum(x) { return x == null ? "–" : x.toFixed(4); }
@@ -292,6 +327,37 @@ function report(rowsAll) {
   return { out, rows };
 }
 
+function printClvSection() {
+  /* CLV usa TODOS los análisis prospectivos (liquidados o no): compara
+     línea de entrada vs línea de cierre, el resultado del juego no importa. */
+  let analyses = getAllAnalyses().filter(r => r.retro === 0);
+  if (args.from)             analyses = analyses.filter(r => r.game_date >= args.from);
+  if (args.to)               analyses = analyses.filter(r => r.game_date <= args.to + "T99");
+  if (args["logic-version"]) analyses = analyses.filter(r => r.logic_version === args["logic-version"]);
+  if (!args["all-snapshots"]) analyses = dedupLatest(analyses).rows;
+
+  const clvRows = computeClvRows(analyses, getAllClosingLines());
+  const s = clvSummary(clvRows);
+
+  console.log("\n── Closing Line Value (moneyline, mismo book, probabilidades sin vig) ──");
+  if (s.n === 0) {
+    console.log(`Candidatos prospectivos: ${s.candidatos} | con cierre comparable: 0`);
+    if (Object.keys(s.reasons).length) {
+      console.log(`Sin CLV: ${Object.entries(s.reasons).map(([k, v]) => `${k}=${v}`).join(" · ")}`);
+    }
+    console.log("Aún sin líneas de cierre capturadas — corre npm run close en la ventana previa a los juegos.");
+    return s;
+  }
+  const pp = (x) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)} pp`;
+  console.log(`Candidatos: ${s.candidatos} | con cierre comparable: ${s.n} (cobertura ${fmtPct(s.cobertura)})${flag(s.n)}`);
+  console.log(`CLV medio: ${pp(s.mean)} | mediana: ${pp(s.median)} | positivos: ${fmtPct(s.pctPositivo)} | negativos: ${fmtPct(s.pctNegativo)}`);
+  console.log(`Sin CLV: ${Object.entries(s.reasons).map(([k, v]) => `${k}=${v}`).join(" · ") || "ninguno"}`);
+  for (const [v, g] of Object.entries(s.porVersion)) console.log(`  versión ${v}: n=${g.n} medio ${pp(g.mean)}${flag(g.n)}`);
+  for (const [b, g] of Object.entries(s.porBook))    console.log(`  book ${b}: n=${g.n} medio ${pp(g.mean)}${flag(g.n)}`);
+  console.log("Nota: CLV mide anticipación de información vs el cierre; NO garantiza rentabilidad.");
+  return s;
+}
+
 /* Solo ejecuta si se llama directo (permite importar las funciones en tests) */
 if (import.meta.url === `file://${process.argv[1]}`) {
   const rowsRaw = getSettledAnalyses().map(r => ({
@@ -300,6 +366,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     market_prob_home: r.market_prob_home != null ? Number(r.market_prob_home) : null,
   }));
   const { out, rows } = report(rowsRaw) ?? {};
+  const clv = printClvSection();
+  if (out) out.clv = clv;
   if (args.json && out) {
     const p = safeWrite(args.json, JSON.stringify(out, null, 2));
     console.log(`\nJSON → ${p}`);

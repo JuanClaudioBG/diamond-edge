@@ -52,6 +52,32 @@ db.exec(`
 try { db.exec("ALTER TABLE picks ADD COLUMN analysis_id INTEGER"); } catch { /* ya existe */ }
 try { db.exec("ALTER TABLE analysis_log ADD COLUMN odds_fetched_at TEXT"); } catch { /* ya existe */ }
 
+/* Líneas de cierre (CLV) — tabla independiente; analysis_log.odds_json es
+   inmutable y JAMÁS se toca. Identidad lógica: game_pk + book_key + market.
+   Sin UNIQUE a propósito: los intentos fallidos y snapshots tempranos se
+   conservan para auditoría; la idempotencia vive en el código de captura. */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS closing_lines (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_pk              INTEGER NOT NULL,
+    book_key             TEXT NOT NULL,
+    market               TEXT NOT NULL DEFAULT 'h2h',
+    captured_at          TEXT NOT NULL,
+    book_last_update     TEXT,
+    game_start_time      TEXT NOT NULL,
+    minutes_before_start REAL,
+    staleness_minutes    REAL,
+    odds_home            INTEGER,
+    odds_away            INTEGER,
+    close_prob_home_nv   REAL,
+    close_prob_away_nv   REAL,
+    odds_json            TEXT NOT NULL,
+    capture_status       TEXT NOT NULL,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_closing_identity ON closing_lines(game_pk, book_key, market)");
+
 export const getAllPicks = () =>
   db.prepare("SELECT * FROM picks ORDER BY fecha_creacion DESC").all();
 
@@ -90,3 +116,29 @@ export const getSettledAnalyses = () =>
 
 export const getAllAnalyses = () =>
   db.prepare("SELECT * FROM analysis_log ORDER BY created_at").all();
+
+/* ── Closing lines (CLV) ─────────────────────────────────────────── */
+export const insertClosingLine = (row) =>
+  db.prepare(`
+    INSERT INTO closing_lines (
+      game_pk, book_key, market, captured_at, book_last_update, game_start_time,
+      minutes_before_start, staleness_minutes, odds_home, odds_away,
+      close_prob_home_nv, close_prob_away_nv, odds_json, capture_status
+    ) VALUES (
+      @game_pk, @book_key, @market, @captured_at, @book_last_update, @game_start_time,
+      @minutes_before_start, @staleness_minutes, @odds_home, @odds_away,
+      @close_prob_home_nv, @close_prob_away_nv, @odds_json, @capture_status
+    )
+  `).run(row);
+
+export const getAllClosingLines = () =>
+  db.prepare("SELECT * FROM closing_lines ORDER BY captured_at").all();
+
+/* Análisis prospectivos sin liquidar — objetivos de captura de cierre */
+export const getPendingCloseTargets = () =>
+  db.prepare(`
+    SELECT id, game_pk, game_date, home_team, away_team, odds_json
+    FROM analysis_log
+    WHERE retro = 0 AND game_pk IS NOT NULL AND odds_json IS NOT NULL
+      AND resultado IS NULL
+  `).all();
