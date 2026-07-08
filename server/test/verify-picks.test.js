@@ -110,10 +110,10 @@ test("Total con línea distinta a la listada no verifica", () => {
 
 /* ═══ Moneyline y lote completo ═══ */
 
-test("Moneyline no se modifica (flujo validado aparte)", () => {
+test("Moneyline conserva sus campos y recibe cuotaReal del snapshot (badge/EV intactos)", () => {
   const pick = { tipo: "Moneyline", pick: "Texas Rangers ML", valor: "ALTO", razon: "x" };
   const v = verifyPick(pick, mkOdds(), HOME, AWAY);
-  assert.deepEqual(v, pick);
+  assert.deepEqual(v, { ...pick, cuotaReal: -110, verificado: true });
 });
 
 test("verifyPicks procesa el lote y sin odds todo RL/Total queda SIN CUOTA", () => {

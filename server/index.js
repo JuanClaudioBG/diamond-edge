@@ -7,8 +7,9 @@ import path from "path";
 import { getAllPicks, insertPick, updateResultado, insertAnalysisLog } from "./db.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
-import { verifyPicks, sanitizeTotalNarrative } from "./verify-picks.js";
+import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
+import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage } from "./batter-profiles.js";
 
 dotenv.config();
 
@@ -19,8 +20,12 @@ dotenv.config();
    .3 = fix cuotas inventadas: ambos lados de RL/Total en el prompt, regla de
    cuotas exactas, verificación de picks en código (verify-picks.js) ·
    .4 = sanitización financiera de razones en RL/Total/Props y separación
-   cuota-verificada ≠ valor-verificado (SEÑAL en vez de VALOR sin EV). */
-const LOGIC_VERSION = "2026-07-02.4";
+   cuota-verificada ≠ valor-verificado (SEÑAL en vez de VALOR sin EV) ·
+   .5 = Statcast ofensivo real (player_id→currentTeam, ponderado por PA),
+   reglas explícitas de LOB%, dirección ERA vs xERA/FIP, coherencia narrativa
+   con mercado oficial, total proyectado separado de línea real, bloqueo de
+   rankings no verificados, props de K de abridores remitidos al Radar. */
+const LOGIC_VERSION = "2026-07-02.5";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -216,7 +221,7 @@ function savantBatterURL() {
   return (
     "https://baseballsavant.mlb.com/leaderboard/custom" +
     `?year=${year}&type=batter&filter=&min=50` +
-    "&selections=xwoba,barrel_batted_rate,hard_hit_percent,whiff_percent,k_percent,bb_percent,exit_velocity_avg" +
+    "&selections=pa,xwoba,barrel_batted_rate,hard_hit_percent,whiff_percent,k_percent,bb_percent,exit_velocity_avg" +
     "&chart=false&csv=true"
   );
 }
@@ -239,47 +244,9 @@ async function getSavantBatterMap() {
   }
 }
 
-const BATTER_FIELDS = [
-  "xwoba", "barrel_batted_rate", "hard_hit_percent",
-  "whiff_percent", "k_percent", "bb_percent", "exit_velocity_avg",
-];
-
-function buildBatterProfiles(map) {
-  const teams = new Map();
-  for (const row of map.values()) {
-    const tid = row.team_id;
-    if (!tid) continue;
-    if (!teams.has(tid)) {
-      teams.set(tid, { sums: Object.fromEntries(BATTER_FIELDS.map(f => [f, 0])), count: 0 });
-    }
-    const entry = teams.get(tid);
-    for (const f of BATTER_FIELDS) {
-      const v = parseFloat(row[f]);
-      if (!isNaN(v)) entry.sums[f] += v;
-    }
-    entry.count++;
-  }
-  const profiles = new Map();
-  for (const [tid, { sums, count }] of teams) {
-    if (count === 0) continue;
-    profiles.set(tid, Object.fromEntries(BATTER_FIELDS.map(f => [f, sums[f] / count])));
-  }
-  return profiles;
-}
-
-function fmtBatterTeam(profile, teamName) {
-  if (!profile) return `${teamName}: sin datos Statcast de bateadores`;
-  const p1 = (f) => parseFloat(profile[f]).toFixed(1);
-  const p3 = (f) => parseFloat(profile[f]).toFixed(3);
-  return (
-    `${teamName}: xwOBA ${p3("xwoba")} | ` +
-    `Barrel% ${p1("barrel_batted_rate")} | ` +
-    `Hard Hit% ${p1("hard_hit_percent")} | ` +
-    `Exit Velo ${p1("exit_velocity_avg")} mph | ` +
-    `K% ${p1("k_percent")} | ` +
-    `BB% ${p1("bb_percent")}`
-  );
-}
+/* buildBatterProfiles / fmtBatterTeam viven en batter-profiles.js:
+   el CSV de Savant no trae team_id, la agrupación usa el mapa verificable
+   player_id → currentTeam.id de MLB Stats API, ponderada por PA. */
 
 /* ─── MLB Standings cache (4 h TTL) ─────────────────────────────── */
 const STANDINGS_TTL_MS = 4 * 60 * 60 * 1000;
@@ -608,7 +575,7 @@ app.post("/api/analyze", async (req, res) => {
   if (!h || !a) return res.status(400).json({ error: "Se requieren datos de home y away." });
 
   const season = new Date().getFullYear();
-  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap, aPlatoon, hPlatoon, oddsGame, hFatigue, aFatigue] = await Promise.all([
+  const [savant, batterMap, boxscore, standingsMap, weather, hBullpen, aBullpen, fangraphsMap, aPlatoon, hPlatoon, oddsGame, hFatigue, aFatigue, playerTeamMap] = await Promise.all([
     getSavantMap(),
     getSavantBatterMap(),
     gamePk
@@ -624,8 +591,9 @@ app.post("/api/analyze", async (req, res) => {
     getOddsForGame(h.team.name, a.team.name, gameDate),
     getBullpenFatigue(h.team.id).catch(() => null),
     getBullpenFatigue(a.team.id).catch(() => null),
+    getPlayerTeamMap(),
   ]);
-  const batterProfiles = buildBatterProfiles(batterMap);
+  const { profiles: batterProfiles, meta: batterMeta } = buildBatterProfiles(batterMap, playerTeamMap);
   const aSavant = a.prob?.id ? savant.get(String(a.prob.id)) : null;
   const hSavant = h.prob?.id ? savant.get(String(h.prob.id)) : null;
   const aName   = a.prob?.fullName || "Visitante TBD";
@@ -735,7 +703,7 @@ ${formSection}
 
 ${weatherSection}
 
-OFENSIVA STATCAST (por equipo, Baseball Savant ${new Date().getFullYear()}, mín 50 PA):
+OFENSIVA STATCAST (por equipo, Baseball Savant ${new Date().getFullYear()}, mín 50 PA${fmtBatterCoverage(batterMeta)}):
 ${fmtBatterTeam(batterProfiles.get(String(a.team.id)), a.team.name)}
 ${fmtBatterTeam(batterProfiles.get(String(h.team.id)), h.team.name)}
 
@@ -779,7 +747,7 @@ Si se cumplen menos de 3 → máximo VALOR MEDIO, y añade "⚠️ Total con inc
 Al reportar los factores usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido: solo los factores plenamente cumplidos suman para la regla de 3 (nunca describas 2 cumplidos + 1 parcial como "3 de 4 factores cumplidos").
 
 REGLA DE CUOTAS EXACTAS (obligatoria):
-Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en estos datos: nunca escribas una línea numérica estimada; describe el prop cualitativamente (p.ej. "Over strikeouts del abridor") y su justificación.
+Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en estos datos: nunca escribas una línea numérica estimada; describe el prop cualitativamente y su justificación. Los ángulos de strikeouts de ABRIDORES ya los cubre el Radar de Ponches con game logs reales: NO los conviertas en pick Prop; si detectas uno, menciónalo breve en factoresClave como "ángulo de ponches del abridor — revisar en Radar de Ponches". Ningún prop se vuelve pick oficial sin línea y cuota verificadas.
 
 REGLA DE SOPORTE OFENSIVO:
 Si el pitcher abridor tiene métricas dominantes (xERA bajo, K/9 alto) PERO su equipo tiene ofensiva débil en temporada (OPS por debajo de .700 o entre los peores del partido), NO asumas automáticamente que el dominio del pitcher se traduce en victoria del equipo. Separa el análisis: "el pitcher puede ganar el duelo individual" vs "el equipo puede ganar el partido". En estos casos, el Moneyline del equipo con el pitcher dominante debe bajar de confianza si su ofensiva no respalda, incluso si el pitcheo se ve favorable.
@@ -787,8 +755,31 @@ Si el pitcher abridor tiene métricas dominantes (xERA bajo, K/9 alto) PERO su e
 PROBABILIDAD Y VALOR:
 Emite tu probabilidad de victoria del equipo LOCAL como número 0-100 en el campo probLocal (obligatorio). Sé honesto: si el partido es parejo, di 50-55, no exageres. El valor esperado contra el mercado se calcula fuera del modelo con tu probLocal — NO calcules EV tú mismo ni inventes probabilidades de mercado. Usa LÍNEAS DE MERCADO solo como referencia de qué espera el consenso: si tu lectura difiere mucho del mercado, explica POR QUÉ en factoresClave (el mercado suele tener razón).
 
-Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher titular, toros del bullpen. Al interpretar métricas: xERA vs ERA real indica suerte/regresión esperada; FIP mide rendimiento independiente de la defensa (FIP < ERA = pitcher con mala suerte); xFIP normaliza la tasa de HR al 10.5% de fly balls (xFIP < FIP = la tasa de HR regresará a la media); BABIP alto con LOB% bajo indica mala suerte defensiva o situacional; GB% alto reduce HR permitidos y favorece al pitcher en estadios grandes; barrel rate y exit velo miden calidad de contacto permitido; whiff% y K% miden dominancia; xwOBA es el indicador más predictivo de producción ofensiva futura; K/BB > 3.0 indica control élite. Responde ÚNICAMENTE JSON sin markdown ni texto extra:
-{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","probLocal":55,"confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"estimado":"9.5","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
+REGLA DE COHERENCIA CON MERCADO OFICIAL:
+La tarjeta estructurada del servidor es la ÚNICA fuente oficial de cuota, probabilidad sin vig y EV. No inventes cuotas, no recalcules EV, y no presentes probabilidad implícita bruta como si fuera probabilidad sin vig (son números distintos salvo mercados simétricos). Si hablas del mercado, hazlo en términos generales o citando textualmente los valores de LÍNEAS DE MERCADO. Con edge pequeño usa lenguaje moderado ("ventaja moderada identificada por el modelo") — nunca "valor claro", "apuesta obligada" ni equivalentes.
+
+REGLA DE TOTAL PROYECTADO VS LÍNEA REAL:
+totalCarreras.proyectado es TU proyección de carreras esperadas del juego — un número tuyo, derivado del análisis. NO es la línea del sportsbook: la línea real solo existe en LÍNEAS DE MERCADO y la verifica el servidor. Repite el mismo número en estimado (compatibilidad). Nunca copies la línea del mercado como proyección ni presentes tu proyección como si fuera la línea real. La señal Over/Under contra la línea real verificada la construye el servidor, no tú.
+
+REGLAS DE DIRECCIÓN ERA vs xERA/FIP (obligatorias, no las inviertas):
+- xERA MENOR que ERA = los resultados reales fueron PEORES que el proceso → posible MEJORA futura del ERA.
+- xERA MAYOR que ERA = los resultados reales fueron MEJORES que el proceso → posible DETERIORO futuro.
+- FIP MENOR que ERA → posible mejora. FIP MAYOR que ERA → posible deterioro.
+- Diferencias pequeñas (menos de ~0.50) NO justifican conclusiones fuertes.
+- Si xERA, FIP y xFIP apuntan en direcciones distintas, di "señales mixtas" — no elijas la que convenga a tu narrativa.
+- Con muestras pequeñas (pocas aperturas o IP), etiqueta toda conclusión de regresión como baja confianza.
+
+REGLAS DE INTERPRETACIÓN LOB%:
+- LOB% bajo (<~68%) PUEDE sugerir mejora futura si se normaliza — es una posibilidad, no garantía, y NUNCA una razón automática de empeoramiento del ERA.
+- LOB% alto (>~78%) sugiere riesgo de regresión negativa del ERA.
+- Un K% alto puede sostener PARCIALMENTE un LOB% alto, pero no lo vuelve sostenible en automático.
+- En muestras pequeñas usa lenguaje cauteloso ("podría regresar"), jamás afirmes la regresión como certeza.
+
+REGLA ANTI-RANKINGS:
+PROHIBIDO afirmar posiciones de liga que los datos no incluyen: "lidera MLB", "lidera la liga", "mejor de la liga", "número uno", "top 5", "top 10" o similares. Este análisis NO recibe rankings calculados. Describe con el valor real: "K/9 de élite (11.2)", "perfil de ponches fuerte", "métrica destacada entre los datos del duelo".
+
+Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher titular, toros del bullpen. Al interpretar métricas: xERA y FIP miden el proceso independiente de suerte y defensa (la dirección de la regresión está en REGLAS DE DIRECCIÓN — respétala); xFIP normaliza la tasa de HR al 10.5% de fly balls (xFIP < FIP = la tasa de HR regresará a la media); BABIP alto con LOB% bajo PUEDE indicar mala suerte defensiva o situacional (ver REGLAS DE INTERPRETACIÓN LOB%); GB% alto reduce HR permitidos y favorece al pitcher en estadios grandes; barrel rate y exit velo miden calidad de contacto permitido; whiff% y K% miden dominancia; xwOBA es el indicador más predictivo de producción ofensiva futura; K/BB > 3.0 indica control élite. Responde ÚNICAMENTE JSON sin markdown ni texto extra:
+{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","probLocal":55,"confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"proyectado":"8.9","estimado":"8.9","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
 
   try {
     console.log("Modelo enviado a Anthropic:", MODEL);
@@ -815,6 +806,16 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
        RL/Total solo con cuota exacta del mismo lado; props → "para revisar" ── */
     analysis.picks = verifyPicks(analysis.picks, oddsGame, h.team.name, a.team.name);
     analysis.totalCarreras = sanitizeTotalNarrative(analysis.totalCarreras);
+    /* Compatibilidad: proyectado (nuevo, .5) y estimado (legado) se espejan */
+    if (analysis.totalCarreras) {
+      analysis.totalCarreras.proyectado ??= analysis.totalCarreras.estimado ?? null;
+      analysis.totalCarreras.estimado   ??= analysis.totalCarreras.proyectado ?? null;
+    }
+    /* Línea de mercado autoritaria (totals.point del snapshot) — la narrativa
+       no puede citar otra línea; null sin crash cuando no hay totals. */
+    analysis.totalCarreras = attachMarketTotalLine(analysis.totalCarreras, oddsGame);
+    /* Rankings no verificados y hype financiero fuera de TODA la narrativa */
+    sanitizeNarratives(analysis);
 
     /* ── EV calculado en código (no por el LLM) ─────────────────── */
     const mkt = marketProbs(oddsGame, h.team.name, a.team.name);
@@ -899,7 +900,7 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
         predicted_winner: analysis.prediccion?.ganador ?? null,
         confianza:        analysis.prediccion?.confianza ?? null,
         calificacion:     analysis.calificacionGeneral ?? null,
-        total_estimado:   analysis.totalCarreras?.estimado ?? null,
+        total_estimado:   analysis.totalCarreras?.estimado ?? analysis.totalCarreras?.proyectado ?? null,
         total_reco:       analysis.totalCarreras?.recomendacion ?? null,
         ev_pct:           mercado?.evGanadorPct ?? null,
         context_json:     JSON.stringify({
@@ -964,7 +965,7 @@ app.patch("/api/picks/:id", (req, res) => {
 app.get("/{*path}", (_req, res) => res.sendFile(path.join(DIST, "index.html")));
 
 /* Warm up caches on boot */
-Promise.all([getSavantMap(), getSavantBatterMap(), getStandingsMap(), getFangraphsMap()]);
+Promise.all([getSavantMap(), getSavantBatterMap(), getStandingsMap(), getFangraphsMap(), getPlayerTeamMap()]);
 
 app.listen(3001, () => {
   console.log("Diamond Edge server corriendo en http://localhost:3001");

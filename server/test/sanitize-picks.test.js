@@ -9,12 +9,12 @@ import { verifyPick, sanitizeFinancialClaims, sanitizeTotalNarrative } from "../
 const HOME = "Texas Rangers";
 const AWAY = "Detroit Tigers";
 
-const mkOdds = ({ spreads = null, totals = null } = {}) => ({
+const mkOdds = ({ spreads = null, totals = null, h2h = [-110, -110] } = {}) => ({
   home_team: HOME, away_team: AWAY,
   bookmakers: [{
     key: "fanduel", title: "FanDuel", last_update: "2026-07-02T18:00:00Z",
     markets: [
-      { key: "h2h", outcomes: [{ name: HOME, price: -110 }, { name: AWAY, price: -110 }] },
+      { key: "h2h", outcomes: [{ name: HOME, price: h2h[0] }, { name: AWAY, price: h2h[1] }] },
       ...(spreads ? [{ key: "spreads", outcomes: spreads }] : []),
       ...(totals  ? [{ key: "totals",  outcomes: totals  }] : []),
     ],
@@ -95,13 +95,14 @@ test("Prop cuya razón contiene cuota inventada → sanitizada, categoría intac
 
 /* ═══ 6. MONEYLINE intacto ═══ */
 
-test("Moneyline verificado conserva cuota, probabilidad y EV sin cambios", () => {
+test("Moneyline conserva badge/probabilidad/EV y recibe cuotaReal oficial del snapshot", () => {
   const pick = {
     tipo: "Moneyline", pick: "Texas Rangers ML", valor: "ALTO", riesgo: "MEDIO",
     razon: "Prob mercado 50.4% vs nuestra 57% — el EV lo calcula el servidor.",
   };
   const v = verifyPick(pick, mkOdds(), HOME, AWAY);
-  assert.deepEqual(v, pick, "ML no debe ser tocado por la verificación ni la sanitización");
+  assert.deepEqual(v, { ...pick, cuotaReal: -110, verificado: true },
+    "solo se adjunta la cuota congelada: badge, razón y demás campos intactos");
 });
 
 /* ═══ Sanitizador: conservador con datos deportivos ═══ */
@@ -169,7 +170,7 @@ test("frase literal 2 (Prop): 'valor MEDIO por perfil sólido...' → señal med
 
 test("Moneyline -108: '(implícito 50%)' se ELIMINA — nunca se reinterpreta como sin vig", () => {
   const pick = { tipo: "Moneyline", pick: "Texas Rangers ML", valor: "MEDIO", riesgo: "MEDIO", razon: "A precio -108 (implícito 50%) el duelo es parejo." };
-  const v = verifyPick(pick, mkOdds(), HOME, AWAY);
+  const v = verifyPick(pick, mkOdds({ h2h: [-108, -108] }), HOME, AWAY);
   assert.equal(v.valor, "MEDIO", "badge VALOR de Moneyline intacto");
   assert.equal(v.tipo, "Moneyline");
   assert.ok(!/impl[ií]cit/.test(v.razon), `'implícito' sobrevivió: ${v.razon}`);
@@ -181,20 +182,21 @@ test("Moneyline -108: '(implícito 50%)' se ELIMINA — nunca se reinterpreta co
 test("Moneyline asimétrico: el % implícito del LLM nunca se transforma en probabilidad sin vig", () => {
   // -150/+130: implícita cruda del favorito 60%, sin vig ≈ 58% — son distintas
   const pick = { tipo: "Moneyline", pick: "Texas Rangers ML", valor: "ALTO", riesgo: "BAJO", razon: "A precio -150 (probabilidad implícita 60%) el favorito está caro." };
-  const v = verifyPick(pick, mkOdds(), HOME, AWAY);
+  const v = verifyPick(pick, mkOdds({ h2h: [-150, 130] }), HOME, AWAY);
   assert.ok(!/sin vig/.test(v.razon), `relabel prohibido: ${v.razon}`);
   assert.ok(!/60%/.test(v.razon), "el 60% crudo del LLM no debe sobrevivir con ninguna etiqueta");
   assert.match(v.razon, /A cuota -150 el favorito está caro\./);
 });
 
-test("Moneyline sin paréntesis implícito: idéntico salvo 'A precio' → 'A cuota'", () => {
+test("Moneyline: cuota narrativa que COINCIDE con la congelada sobrevive; solo 'A precio' → 'A cuota'", () => {
   const pick = { tipo: "Moneyline", pick: "Texas Rangers ML", valor: "ALTO", riesgo: "MEDIO", razon: "A precio -120 el favorito se sostiene por el bullpen." };
-  const v = verifyPick(pick, mkOdds(), HOME, AWAY);
+  const v = verifyPick(pick, mkOdds({ h2h: [-120, 100] }), HOME, AWAY);
   assert.equal(v.razon, "A cuota -120 el favorito se sostiene por el bullpen.");
-  assert.deepEqual({ ...v, razon: null }, { ...pick, razon: null }, "ningún otro campo cambia");
+  assert.equal(v.cuotaReal, -120);
+  assert.deepEqual({ ...v, razon: null, cuotaReal: null, verificado: null }, { ...pick, razon: null, cuotaReal: null, verificado: null }, "ningún otro campo cambia");
 });
 
-test("Moneyline sin patrones problemáticos queda idéntico (regresión)", () => {
+test("Moneyline sin patrones problemáticos: campos idénticos + cuotaReal adjunta (regresión)", () => {
   const pick = { tipo: "Moneyline", pick: "Texas Rangers ML", valor: "ALTO", riesgo: "MEDIO", razon: "Prob mercado 50.4% vs nuestra 57% — el EV lo calcula el servidor." };
-  assert.deepEqual(verifyPick(pick, mkOdds(), HOME, AWAY), pick);
+  assert.deepEqual(verifyPick(pick, mkOdds(), HOME, AWAY), { ...pick, cuotaReal: -110, verificado: true });
 });

@@ -62,6 +62,93 @@ export function sanitizeFinancialClaims(text) {
     .trim();
 }
 
+/* ─── Enforcement .5: rankings, hype y cuotas narrativas ─────────── */
+
+/**
+ * Rankings de liga/MLB no verificables → lenguaje seguro con el mismo resto
+ * de la oración. Patrones ESTRECHOS: exigen contexto MLB/liga para no tocar
+ * "líder del bullpen", "K% 27.3", "récord 7-3" ni métricas legítimas.
+ */
+export function sanitizeUnverifiedRankings(text) {
+  return String(text ?? "")
+    .replace(/\blidera\s+(?:la\s+)?(?:MLB|liga)\b/gi, "presenta métricas de élite")
+    .replace(/\bl[ií]der\s+de\s+(?:la\s+)?(?:MLB|liga)\b/gi, "perfil de élite")
+    .replace(/\b(?:el\s+)?mejor\s+de\s+(?:la\s+)?(?:MLB|liga)\b/gi, "de élite")
+    .replace(/\bn[úu]mero\s+uno\s+de\s+(?:la\s+)?(?:MLB|liga)\b/gi, "de élite")
+    .replace(/#\s?1\s+de\s+(?:la\s+)?(?:MLB|liga)\b/gi, "de élite")
+    .replace(/\btop[-\s]?\d+\s+(?:de|en)\s+(?:la\s+)?(?:MLB|liga)\b/gi, "de élite");
+}
+
+/** Lenguaje de hype financiero → moderado. No toca el EV estructurado. */
+export function degradeHypeLanguage(text) {
+  return String(text ?? "")
+    .replace(/\bvalor\s+claro\b/gi, "ventaja moderada")
+    .replace(/\bgran\s+valor\b/gi, "ventaja moderada")
+    .replace(/\bapuesta\s+obligada\b/gi, "opción con ventaja moderada")
+    .replace(/\bfree\s+money\b/gi, "ventaja moderada")
+    .replace(/\block\b/g, "opción con ventaja moderada");
+}
+
+/**
+ * Narrativa de Moneyline: elimina oraciones que citen una cuota americana
+ * DISTINTA a la congelada, o que hablen de probabilidad implícita bruta.
+ * La cuota real (si coincide) y los porcentajes deportivos sobreviven.
+ */
+export function stripMismatchedOdds(text, allowedPrice) {
+  if (!text) return text ?? "";
+  const sentences = String(text).split(/(?<=[.!?])\s+/);
+  return sentences.filter(s => {
+    if (/impl[ií]cit[oa]/i.test(s)) return false;
+    const tokens = s.match(/[+-]\d{3,4}(?!\.?\d)/g) ?? [];
+    return tokens.every(t => allowedPrice != null && Number(t) === Number(allowedPrice));
+  }).join(" ").trim();
+}
+
+/**
+ * Sanitización global de campos narrativos del análisis (rankings + hype).
+ * Muta el objeto recibido y lo devuelve. Los campos estructurados del
+ * servidor (mercado, EV, cuotaReal, lineaMercado) no se tocan.
+ */
+export function sanitizeNarratives(analysis) {
+  if (!analysis || typeof analysis !== "object") return analysis;
+  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(t));
+  if (typeof analysis.resumen === "string") analysis.resumen = clean(analysis.resumen);
+  if (typeof analysis.ventajaPitcheoTexto === "string") analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
+  if (typeof analysis.ventajaOfensivaTexto === "string") analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
+  if (Array.isArray(analysis.factoresClave)) {
+    analysis.factoresClave = analysis.factoresClave.map(f => typeof f === "string" ? clean(f) : f);
+  }
+  if (typeof analysis.prediccion?.razon === "string") analysis.prediccion.razon = clean(analysis.prediccion.razon);
+  if (typeof analysis.totalCarreras?.razon === "string") analysis.totalCarreras.razon = clean(analysis.totalCarreras.razon);
+  if (Array.isArray(analysis.picks)) {
+    for (const p of analysis.picks) if (typeof p?.razon === "string") p.razon = clean(p.razon);
+  }
+  return analysis;
+}
+
+/**
+ * Línea de mercado AUTORITARIA para el total, desde totals.point del book
+ * preferido del snapshot congelado. La narrativa no puede citar una línea
+ * distinta: se corrige al valor real, o se despersonaliza si no hay línea.
+ */
+export function attachMarketTotalLine(totalCarreras, oddsGame) {
+  if (!totalCarreras) return totalCarreras;
+  const bk     = preferredBook(oddsGame);
+  const totals = bk?.markets?.find(m => m.key === "totals");
+  const rawPoint = totals?.outcomes?.find(o => o.point != null)?.point;
+  const lineaMercado = rawPoint != null ? Number(rawPoint) : null;
+  const t = { ...totalCarreras, lineaMercado };
+  if (typeof t.razon === "string" && t.razon) {
+    t.razon = t.razon.replace(
+      /l[ií]nea(?:\s+(?:de|del)(?:\s+mercado)?)?\s+(?:de\s+)?(\d+(?:\.\d+)?)/gi,
+      (m, num) => lineaMercado != null
+        ? (Number(num) === lineaMercado ? m : m.replace(num, String(lineaMercado)))
+        : "la línea del mercado"
+    );
+  }
+  return t;
+}
+
 /* Moneyline: un porcentaje "implícito" escrito por el LLM no puede
    reinterpretarse como probabilidad sin vig (solo coinciden en mercados
    simétricos). El paréntesis se ELIMINA completo — la probabilidad sin vig
@@ -163,8 +250,25 @@ export function verifyPick(pick, oddsGame, homeName, awayName) {
   if (tipo.startsWith("runline")) return verifyRunLine(pick, oddsGame, homeName, awayName);
   if (tipo.startsWith("total"))   return verifyTotal(pick, oddsGame);
   if (tipo.startsWith("moneyline")) {
-    /* Solo redacción de "implícito" — badge, cuota, probabilidad y EV intactos */
-    return pick?.razon != null ? { ...pick, razon: fixMoneylineWording(pick.razon) } : { ...pick };
+    /* Cuota OFICIAL adjunta desde el snapshot congelado (lado del pick).
+       Badge VALOR, probLocal y EV del servidor quedan intactos; la narrativa
+       no puede citar una cuota distinta a la congelada ni "implícitas". */
+    const bk   = preferredBook(oddsGame);
+    const h2h  = bk?.markets?.find(m => m.key === "h2h");
+    const team = teamInText(pick.pick, homeName, awayName);
+    const out  = team != null
+      ? h2h?.outcomes?.find(o => norm(o.name) === norm(team))
+      : null;
+    const cuotaReal = out?.price ?? null;
+    const res = { ...pick };
+    if (res.razon != null) {
+      res.razon = stripMismatchedOdds(fixMoneylineWording(res.razon), cuotaReal);
+    }
+    if (cuotaReal != null) {
+      res.cuotaReal  = cuotaReal;
+      res.verificado = true;
+    }
+    return res;
   }
   return { ...pick }; // tipos desconocidos: sin cambios
 }

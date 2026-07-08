@@ -1,4 +1,5 @@
 import { advCls, advLbl } from "../utils";
+import { totalDisplay, isStarterKPropCoveredByRadar } from "../analysis-display";
 
 export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick }) {
   if (analyzing) return <div className="ld"><span className="sp" />ANALIZANDO CON IA…</div>;
@@ -171,19 +172,38 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
       <div className="acard">
         <div className="acard-hdr">🔢 Total de Carreras</div>
         <div className="acard-b">
-          <div className="tot-row">
-            <span className={`tot ${analysis.totalCarreras?.recomendacion}`}>
-              {analysis.totalCarreras?.recomendacion} {analysis.totalCarreras?.estimado}
-            </span>
-            <p style={{ fontSize: 12, color: "var(--dm)", lineHeight: 1.5 }}>{analysis.totalCarreras?.razon}</p>
-          </div>
+          {(() => {
+            const t = analysis.totalCarreras;
+            const { proyeccion, lineaReal, senal } = totalDisplay(t);
+            return (
+              <>
+                <div className="tot-row">
+                  {t?.recomendacion && (
+                    <span className={`tot ${t.recomendacion}`}>
+                      {senal ?? t.recomendacion}
+                    </span>
+                  )}
+                  <p style={{ fontSize: 12, color: "var(--dm)", lineHeight: 1.5 }}>{t?.razon}</p>
+                </div>
+                <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--mu)", marginTop: 8 }}>
+                  Proyección del modelo: {proyeccion ?? "–"}
+                  {" · "}Línea real: {lineaReal != null ? lineaReal : "no verificada"}
+                  {senal && <> · Señal: {senal}</>}
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
 
       {(() => {
         const all      = analysis.picks ?? [];
         const oficiales = all.filter(pk => pk.tipo !== "Prop para revisar");
-        const revisar   = all.filter(pk => pk.tipo === "Prop para revisar");
+        const revisarTodos = all.filter(pk => pk.tipo === "Prop para revisar");
+        /* Dedupe VISUAL: props de K de abridores con tarjeta de Radar visible
+           no se repiten como párrafo — el dato completo sigue en el análisis */
+        const cubiertos = revisarTodos.filter(pk => isStarterKPropCoveredByRadar(pk, analysis.radar));
+        const revisar   = revisarTodos.filter(pk => !cubiertos.includes(pk));
         const fmtCuota  = (c) => (c > 0 ? `+${c}` : `${c}`);
         const chip      = (v) => (v === "SIN CUOTA" || v === "SIN VERIFICAR" || String(v).startsWith("SEÑAL")) ? v : `VALOR ${v}`;
         const pvCls     = (v) => v === "SEÑAL ALTA" ? "ALTO" : v === "SEÑAL MEDIA" ? "MEDIO" : v === "SEÑAL BAJA" ? "BAJO" : v;
@@ -210,14 +230,21 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
                 {oficiales.map((pk, i) => <Pick key={i} pk={pk} />)}
               </div>
             </div>
-            {revisar.length > 0 && (
+            {(revisar.length > 0 || cubiertos.length > 0) && (
               <div className="acard">
                 <div className="acard-hdr">🔍 Props para Revisar</div>
                 <div className="acard-b">
-                  <p style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", marginBottom: 8 }}>
-                    Línea y cuota no verificadas. No entra a ROI ni a la muestra oficial.
-                  </p>
+                  {revisar.length > 0 && (
+                    <p style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", marginBottom: 8 }}>
+                      Línea y cuota no verificadas. No entra a ROI ni a la muestra oficial.
+                    </p>
+                  )}
                   {revisar.map((pk, i) => <Pick key={i} pk={pk} />)}
+                  {cubiertos.map((pk, i) => (
+                    <div key={`c${i}`} style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", padding: "4px 0" }}>
+                      🎯 {pk.pick} — Ángulo de ponches cubierto en Radar de Ponches (ver arriba).
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
