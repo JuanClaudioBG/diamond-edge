@@ -4,7 +4,8 @@ import dotenv  from "dotenv";
 import Anthropic from "@anthropic-ai/sdk";
 import { fileURLToPath } from "url";
 import path from "path";
-import { getAllPicks, insertPick, updateResultado, insertAnalysisLog } from "./db.js";
+import { getAllPicks, insertPick, updateResultado, insertAnalysisLog, getAllAnalyses } from "./db.js";
+import { buildEvaluation } from "./evaluation.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
 import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine } from "./verify-picks.js";
@@ -958,6 +959,17 @@ app.patch("/api/picks/:id", (req, res) => {
   } catch (err) {
     console.error("Error actualizando resultado:", err.message);
     res.status(500).json({ error: true });
+  }
+});
+
+/* Evaluación Moneyball: métricas separadas y auditables (solo lectura).
+   DEBE registrarse antes del catch-all o devolvería index.html. */
+app.get("/api/evaluation", (_req, res) => {
+  try {
+    res.json(buildEvaluation({ picks: getAllPicks(), analyses: getAllAnalyses() }));
+  } catch (err) {
+    console.error("Error en /api/evaluation:", err.message);
+    res.status(500).json({ error: "No se pudo calcular la evaluación." });
   }
 });
 

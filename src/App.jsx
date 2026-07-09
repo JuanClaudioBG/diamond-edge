@@ -50,6 +50,7 @@ export default function DiamondEdge() {
   const [analysis, setAnalysis] = useState(null);
   const [parlay, setParlay]     = useState([]);
   const [historial, setHistorial] = useState([]);
+  const [evaluation, setEvaluation] = useState(null);
   const [ldGames, setLdGames]   = useState(true);
   const [ldGame, setLdGame]     = useState(false);
   const [analyzing, setAnal]    = useState(false);
@@ -77,6 +78,15 @@ export default function DiamondEdge() {
       const r = await fetch(`${API}/api/picks`);
       setHistorial(await r.json());
     } catch(e) { console.error("Error cargando historial:", e); }
+    loadEvaluation();
+  };
+
+  const loadEvaluation = async () => {
+    try {
+      const r = await fetch(`${API}/api/evaluation`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setEvaluation(await r.json());
+    } catch(e) { console.error("Error cargando evaluación:", e); setEvaluation(null); }
   };
 
   const pickGame = async (game) => {
@@ -144,6 +154,7 @@ export default function DiamondEdge() {
         body: JSON.stringify({ resultado }),
       });
       setHistorial(h => h.map(p => p.id === id ? { ...p, resultado } : p));
+      loadEvaluation();   // las cards de evaluación no deben quedar desfasadas
     } catch(e) { console.error("Error marcando resultado:", e); }
   };
 
@@ -198,7 +209,7 @@ export default function DiamondEdge() {
           {/* Content */}
           <div className="tcont">
             {tab === "historial" ? (
-              <HistorialTab picks={historial} onMarcarResultado={marcarResultado} />
+              <HistorialTab picks={historial} evaluation={evaluation} onMarcarResultado={marcarResultado} />
             ) : !sel ? (
               <div className="empty">
                 <div className="empty-ic">⚾</div>

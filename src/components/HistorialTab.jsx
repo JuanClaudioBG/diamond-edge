@@ -1,4 +1,106 @@
-export default function HistorialTab({ picks, onMarcarResultado }) {
+import { useState } from "react";
+import { fmtPct, fmtRoi, fmtUnits, fmtRecordLine, fmtBrier } from "../evaluation-display";
+
+/* Sección Evaluación Moneyball: la MUESTRA OFICIAL es la protagonista;
+   el histórico total queda como contexto. Tolerante a evaluation null. */
+function EvaluacionMoneyball({ ev }) {
+  const [expandida, setExpandida] = useState(false);
+  if (!ev) {
+    return (
+      <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", letterSpacing: 1, textAlign: "center" }}>
+        📐 EVALUACIÓN NO DISPONIBLE
+      </div>
+    );
+  }
+  const of  = ev.officialSample ?? {};
+  const roi = of.roiML ?? {};
+  const oa  = ev.officialAnalyses ?? {};
+  const vs  = ev.byVerificationStatus ?? {};
+  const dup = ev.duplicates ?? {};
+
+  return (
+    <div className="acard">
+      <div className="acard-hdr">📐 Evaluación Moneyball</div>
+      <div className="acard-b">
+        {/* Protagonista: muestra oficial */}
+        <div className="hstats" style={{ marginBottom: 10 }}>
+          {[
+            { v: of.n ?? "–",                l: "Picks oficiales", cls: "gn" },
+            { v: fmtRecordLine(of),          l: "Récord oficial",  cls: "dm" },
+            { v: fmtPct(of.winRate),         l: "Win rate oficial", cls: of.winRate >= 0.5 ? "gn" : "rd" },
+            { v: fmtRoi(roi.roi),            l: `ROI ML (${roi.n ?? 0} picks)`, cls: (roi.roi ?? 0) >= 0 ? "gn" : "rd" },
+          ].map(({ v, l, cls }) => (
+            <div key={l} className="hst">
+              <div className={`hst-v ${cls}`}>{v}</div>
+              <div className="hst-l">{l}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--dm)", marginBottom: 8 }}>
+          Unidades ML: {fmtUnits(roi.units)} · Brier modelo {fmtBrier(oa.brier)} vs mercado {fmtBrier(oa.brierMercado)} ({oa.n ?? 0} análisis)
+          {(of.n ?? 0) > 0 && of.n < 30 && <span style={{ color: "var(--au)" }}> · ⚠ n&lt;30: insuficiente para conclusiones</span>}
+        </div>
+        <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginBottom: 10 }}>
+          Histórico total (contexto): {ev.overall?.n ?? 0} picks · win rate {fmtPct(ev.overall?.winRate)} — incluye picks históricos sin cuota, no auditable para ROI.
+        </div>
+
+        {/* Por versión */}
+        <div className="hbk" style={{ marginBottom: 10 }}>
+          {Object.entries(ev.byLogicVersion ?? {}).map(([ver, r]) => (
+            <>
+              <span key={`${ver}-t`} className="hbk-t">{ver}</span>
+              <span key={`${ver}-r`} className="hbk-v">{fmtRecordLine(r)} ({r.n})</span>
+              <span key={`${ver}-p`} className="hbk-v" style={{ color: r.winRate >= 0.5 ? "var(--gn)" : "var(--dm)" }}>{fmtPct(r.winRate)}</span>
+            </>
+          ))}
+        </div>
+
+        {/* Por estatus de verificación */}
+        <div className="hbk" style={{ marginBottom: 10 }}>
+          {[
+            ["ML verificado (entra a ROI)", vs.mlVerificado],
+            ["Señales RL/Total (sin EV)",   vs.senalesRLTotal],
+            ["Props para revisar",          vs.propsParaRevisar],
+            ["Props legado",                vs.propsLegado],
+            ["Histórico sin registro",      vs.historicoSinRegistro],
+          ].map(([lbl, r]) => r && r.n > 0 && (
+            <>
+              <span key={`${lbl}-t`} className="hbk-t">{lbl}</span>
+              <span key={`${lbl}-r`} className="hbk-v">{fmtRecordLine(r)}</span>
+              <span key={`${lbl}-p`} className="hbk-v" style={{ color: r.winRate >= 0.5 ? "var(--gn)" : "var(--dm)" }}>{fmtPct(r.winRate)}</span>
+            </>
+          ))}
+        </div>
+
+        {/* Alertas */}
+        {(ev.warnings ?? []).map((w, i) => (
+          <div key={i} style={{ fontFamily: "var(--fm)", fontSize: 9, color: w.level === "warning" ? "var(--au)" : "var(--mu)", padding: "2px 0" }}>
+            {w.level === "warning" ? "⚠" : "·"} {w.msg}
+          </div>
+        ))}
+
+        {/* Auditoría expandida */}
+        <button className="rbtn gano" style={{ marginTop: 8, borderColor: "var(--b2)", color: "var(--dm)" }}
+          onClick={() => setExpandida(e => !e)}>
+          {expandida ? "OCULTAR AUDITORÍA" : "VER AUDITORÍA EXPANDIDA"}
+        </button>
+        {expandida && (
+          <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--dm)", marginTop: 8, lineHeight: 1.8 }}>
+            <div>Duplicados exactos: {(dup.exactos ?? []).length === 0 ? "ninguno" :
+              (dup.exactos ?? []).map(d => `ids [${d.ids.join(", ")}]`).join(" · ")}</div>
+            <div>Reanálisis por juego: {(dup.reanalisis ?? []).length === 0 ? "ninguno" :
+              (dup.reanalisis ?? []).map(r => `gamePk ${r.gamePk} ×${r.n}`).join(" · ")}</div>
+            <div>Picks de análisis supersedidos (cuentan como apuestas): {(dup.supersededPicks ?? []).length === 0 ? "ninguno" : `ids [${dup.supersededPicks.join(", ")}]`}</div>
+            <div>Discrepancias manual vs settle: {(ev.discrepancias ?? []).length === 0 ? "ninguna" :
+              ev.discrepancias.map(d => `pick ${d.pickId}: manual "${d.manual}" vs settle "${d.settle}"`).join(" · ")}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
   const total     = picks.length;
   const ganados   = picks.filter(p => p.resultado === "ganó").length;
   const perdidos  = picks.filter(p => p.resultado === "perdió").length;
@@ -24,6 +126,9 @@ export default function HistorialTab({ picks, onMarcarResultado }) {
 
   return (
     <div className="hcont">
+      {/* Evaluación Moneyball — muestra oficial como protagonista */}
+      <EvaluacionMoneyball ev={evaluation} />
+
       {/* Stats */}
       <div className="hstats">
         {[
