@@ -20,6 +20,10 @@
  */
 
 const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z]/g, "");
+const valueLevel = (s) => {
+  const v = String(s ?? "").toUpperCase().replace(/^VALOR\s+/, "").trim();
+  return ["ALTO", "MEDIO", "BAJO"].includes(v) ? v : null;
+};
 
 const UNVERIFIED_NOTE = "⚠️ Cuota exacta no verificada. Análisis cualitativo; no entra a ROI ni a la muestra oficial.";
 const VERIFIED_NOTE   = "CUOTA VERIFICADA · EV NO CALCULADO — La línea y cuota coinciden con el mercado registrado, pero no existe probabilidad numérica del modelo para calcular EV. No entra a ROI ni a la muestra oficial.";
@@ -113,7 +117,7 @@ export function sanitizeNarratives(analysis) {
   if (!analysis || typeof analysis !== "object") return analysis;
   /* fixMoneylineWording también aquí: la implícita bruta entre paréntesis
      confunde junto a la probabilidad sin vig oficial, en CUALQUIER campo */
-  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(fixMetricComparisons(fixMoneylineWording(t))));
+  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(sanitizeOffensiveComparisons(fixMetricComparisons(fixMoneylineWording(t)))));
   if (typeof analysis.resumen === "string") analysis.resumen = clean(analysis.resumen);
   if (typeof analysis.ventajaPitcheoTexto === "string") analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
   if (typeof analysis.ventajaOfensivaTexto === "string") analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
@@ -175,13 +179,31 @@ export function enforceMlValueConsistency(picks, mercado, homeName, awayName) {
     const ev = side === "home"
       ? mercado.probModeloLocal - mercado.probMercadoLocal
       : (100 - mercado.probModeloLocal) - mercado.probMercadoVisitante;
-    if (!Number.isFinite(ev) || ev > 0) return pick;                // EV positivo: badge intacto en esta fase
+    if (!Number.isFinite(ev)) return pick;
     const evTxt = `${ev > 0 ? "+" : ""}${(Math.round(ev * 10) / 10).toFixed(1)}`;
-    return {
-      ...pick,
-      valor: "SIN VALOR",
-      razon: `EV del servidor: ${evTxt}% — la cuota paga menos que la probabilidad estimada; no es pick de valor. ${pick.razon ?? ""}`.trim(),
-    };
+    if (ev <= 0) {
+      return {
+        ...pick,
+        valor: "SIN VALOR",
+        razon: `EV del servidor: ${evTxt}% — la cuota paga menos que la probabilidad estimada; no es pick de valor. ${pick.razon ?? ""}`.trim(),
+      };
+    }
+    const level = valueLevel(pick.valor);
+    if (ev < 2 && (level === "MEDIO" || level === "ALTO")) {
+      return {
+        ...pick,
+        valor: "BAJO",
+        razon: `Edge del servidor: ${evTxt}% — ventaja mínima; se degrada a valor bajo. ${pick.razon ?? ""}`.trim(),
+      };
+    }
+    if (ev < 5 && level === "ALTO") {
+      return {
+        ...pick,
+        valor: "MEDIO",
+        razon: `Edge del servidor: ${evTxt}% — ventaja moderada; se degrada a valor medio. ${pick.razon ?? ""}`.trim(),
+      };
+    }
+    return pick;
   });
 }
 
@@ -335,6 +357,45 @@ export function fixMetricComparisons(text) {
   );
 
   return out;
+}
+
+const OFFENSIVE_METRIC = "OPS|AVG|OBP|SLG|xwOBA|Barrel%|Hard Hit%|Exit Velo";
+const TEAM_WORD = "[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ.'-]*";
+const TEAM_NAME = `${TEAM_WORD}(?:\\s+${TEAM_WORD}){0,3}`;
+const LEAD_CLAIM = "(?:tiene|presenta|muestra|posee|registra)?\\s*(?:mejor|lidera|supera|est[áa]\\s+por\\s+encima|aventaja)";
+const OFFENSIVE_CONTRADICTION = new RegExp(
+  `\\b(${TEAM_NAME})\\s+${LEAD_CLAIM}\\s+([^.!?]*?\\b(${OFFENSIVE_METRIC})\\b[^.!?]*?)` +
+  `\\(?\\s*(\\d+(?:\\.\\d+)?|\\.\\d+)\\s*(%)?\\s+vs\\s+(\\d+(?:\\.\\d+)?|\\.\\d+)\\s*(%)?` +
+  `([^.!?]*?\\ba\\s+favor\\s+de\\s+(${TEAM_NAME}))?[^.!?]*`,
+  "gi"
+);
+
+/**
+ * Comparaciones ofensivas entre equipos: si la oración afirma que A tiene la
+ * mejor métrica pero los dos números claros favorecen al equipo B nombrado,
+ * se corrige con una frase segura. Sin equipo B confiable, se elimina solo
+ * esa oración. Métricas sueltas y tablas quedan intactas.
+ */
+export function sanitizeOffensiveComparisons(text) {
+  if (text == null) return "";
+  return String(text)
+    .split(/(?<=[.!?])\s+/)
+    .map(sentence => {
+      if (!sentence || sentence.includes("|")) return sentence;
+      return sentence.replace(
+        OFFENSIVE_CONTRADICTION,
+        (m, teamA, _middle, metric, aStr, aPct, bStr, bPct, _favChunk, teamB) => {
+          const a = parseFloat(aStr), b = parseFloat(bStr);
+          if (!Number.isFinite(a) || !Number.isFinite(b) || a >= b) return m;
+          if (!teamB) return "";
+          const pct = aPct || bPct ? "%" : "";
+          return `${teamB} tiene mejor ${metric} de temporada (${bStr}${pct} vs ${aStr}${pct}), aunque la diferencia general es mínima`;
+        }
+      );
+    })
+    .filter(s => s.trim() && !/^[\s.!?]*$/.test(s))
+    .join(" ")
+    .trim();
 }
 
 /* Moneyline: un porcentaje "implícito" escrito por el LLM no puede

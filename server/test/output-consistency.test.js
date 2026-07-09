@@ -35,8 +35,42 @@ test("ML con EV −2% (mercado 69 vs modelo 67) → SIN VALOR, cuotaReal y verif
   assert.match(out.razon, /El pitcheo favorece al local\./, "la razón original se conserva tras la nota");
 });
 
-/* ═══ 2. EV positivo: badge intacto ═══ */
-test("ML con EV +3% → badge del LLM intacto en esta fase", () => {
+/* ═══ 2. EV positivo pero mínimo: máximo VALOR BAJO ═══ */
+test("ML con EV +0.3% y VALOR MEDIO → VALOR BAJO con nota; cuotaReal y verificado conservados", () => {
+  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 69.3 };
+  const [out] = enforceMlValueConsistency([mlPick({ valor: "MEDIO" })], mercado, HOME, AWAY);
+  assert.equal(out.valor, "BAJO");
+  assert.equal(out.cuotaReal, -255);
+  assert.equal(out.verificado, true);
+  assert.match(out.razon, /Edge del servidor: \+0\.3% — ventaja mínima; se degrada a valor bajo\./);
+});
+
+test("ML con EV +1.9% y VALOR ALTO → VALOR BAJO", () => {
+  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 70.9 };
+  const [out] = enforceMlValueConsistency([mlPick({ valor: "ALTO" })], mercado, HOME, AWAY);
+  assert.equal(out.valor, "BAJO");
+  assert.match(out.razon, /Edge del servidor: \+1\.9% — ventaja mínima; se degrada a valor bajo\./);
+});
+
+test("ML con EV +2.5% y VALOR ALTO → VALOR MEDIO", () => {
+  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 71.5 };
+  const [out] = enforceMlValueConsistency([mlPick({ valor: "ALTO" })], mercado, HOME, AWAY);
+  assert.equal(out.valor, "MEDIO");
+  assert.match(out.razon, /Edge del servidor: \+2\.5% — ventaja moderada; se degrada a valor medio\./);
+});
+
+test("ML con EV +5.5% y VALOR ALTO queda intacto; no se eleva automáticamente", () => {
+  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 74.5 };
+  const high = mlPick({ valor: "ALTO", razon: "Edge real amplio." });
+  const low  = mlPick({ valor: "BAJO", razon: "Conservador." });
+  const [outHigh] = enforceMlValueConsistency([high], mercado, HOME, AWAY);
+  const [outLow]  = enforceMlValueConsistency([low], mercado, HOME, AWAY);
+  assert.deepEqual(outHigh, high);
+  assert.deepEqual(outLow, low);
+});
+
+/* ═══ 2b. EV positivo medio: máximo VALOR MEDIO ═══ */
+test("ML con EV +3% → badge MEDIO del LLM intacto en esta fase", () => {
   const mercado = { ...MERCADO_DODGERS, probModeloLocal: 72 };  // 72 − 69 = +3
   const [out] = enforceMlValueConsistency([mlPick()], mercado, HOME, AWAY);
   assert.equal(out.valor, "MEDIO");
@@ -203,6 +237,40 @@ test("sanitizeNarratives ahora corrige comparaciones métricas en razones y fact
   assert.match(analysis.factoresClave[0], /mejores que el proceso/);
   assert.equal(analysis.prediccion.razon, "xERA 3.10 sólido.", "métrica suelta intacta");
   assert.match(analysis.picks[0].razon, /está por debajo del ERA 5\.40/);
+});
+
+test("sanitizeNarratives corrige la comparación ofensiva literal Detroit/Oakland OPS", () => {
+  const analysis = {
+    ventajaOfensivaTexto: "Detroit tiene mejor OPS de temporada (.713 vs .732 a favor de Oakland). El resto queda.",
+  };
+  sanitizeNarratives(analysis);
+  assert.match(analysis.ventajaOfensivaTexto, /Oakland tiene mejor OPS de temporada \(\.732 vs \.713\), aunque la diferencia general es mínima\./);
+  assert.ok(!/Detroit tiene mejor OPS/.test(analysis.ventajaOfensivaTexto));
+  assert.match(analysis.ventajaOfensivaTexto, /El resto queda\./);
+});
+
+test("sanitizeNarratives no toca métricas ofensivas sueltas", () => {
+  const analysis = {
+    resumen: "Detroit trae OPS .713 y xwOBA .321 en la muestra reciente.",
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(analysis.resumen, "Detroit trae OPS .713 y xwOBA .321 en la muestra reciente.");
+});
+
+test("sanitizeNarratives deja intacta una comparación ofensiva correcta", () => {
+  const analysis = {
+    ventajaOfensivaTexto: "Oakland tiene mejor OPS de temporada (.732 vs .713 a favor de Detroit).",
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(analysis.ventajaOfensivaTexto, "Oakland tiene mejor OPS de temporada (.732 vs .713 a favor de Detroit).");
+});
+
+test("sanitizeNarratives no toca frases ofensivas sin equipos claros", () => {
+  const analysis = {
+    resumen: "Mejor OPS de temporada (.713 vs .732) sin contexto suficiente.",
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(analysis.resumen, "Mejor OPS de temporada (.713 vs .732) sin contexto suficiente.");
 });
 
 test("totalDisplay: senalClara=false → SEÑAL NO CLARA; dirección corregida se muestra", () => {
