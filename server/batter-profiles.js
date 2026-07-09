@@ -20,6 +20,103 @@ export const BATTER_FIELDS = [
   "whiff_percent", "k_percent", "bb_percent", "exit_velocity_avg",
 ];
 
+export const BATTER_PLAYER_STATCAST_FIELDS = [
+  "xba", "xwoba", "barrelPct", "hardHitPct", "exitVelo",
+  "launchAngle", "kPct", "bbPct", "whiffPct",
+];
+
+const num = (v) => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+export function normalizeBatterName(s) {
+  return String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9, ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function nameCandidates(row) {
+  const raw = [
+    row?.name,
+    row?.player_name,
+    row?.batter_name,
+    row?.["last_name, first_name"],
+    row?.last_name && row?.first_name ? `${row.first_name} ${row.last_name}` : null,
+  ].filter(Boolean);
+  const out = new Set();
+  for (const name of raw) {
+    const n = normalizeBatterName(name);
+    if (!n) continue;
+    out.add(n);
+    if (n.includes(",")) {
+      const [last, first] = n.split(",").map(p => p.trim()).filter(Boolean);
+      if (first && last) {
+        out.add(`${first} ${last}`);
+        out.add(`${last} ${first}`);
+      }
+    }
+  }
+  return out;
+}
+
+function rowValue(row, ...keys) {
+  for (const key of keys) {
+    const v = num(row?.[key]);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function rowsFromSavant(savant) {
+  if (!savant) return [];
+  if (savant instanceof Map) return [...savant.values()];
+  if (Array.isArray(savant)) return savant;
+  if (typeof savant === "object") return Object.values(savant);
+  return [];
+}
+
+export function normalizeBatterStatcastRow(row) {
+  if (!row) return null;
+  return {
+    playerId: row.player_id != null ? String(row.player_id) : null,
+    name: row.name ?? row.player_name ?? row.batter_name ?? row["last_name, first_name"] ?? null,
+    xba: rowValue(row, "xba", "expected_batting_avg", "batting_avg"),
+    xwoba: rowValue(row, "xwoba"),
+    barrelPct: rowValue(row, "barrel_batted_rate", "barrel_percent", "barrelPct"),
+    hardHitPct: rowValue(row, "hard_hit_percent", "hardHitPct"),
+    exitVelo: rowValue(row, "exit_velocity_avg", "exitVelo"),
+    launchAngle: rowValue(row, "launch_angle", "launch_angle_avg", "launchAngle"),
+    kPct: rowValue(row, "k_percent", "kPct"),
+    bbPct: rowValue(row, "bb_percent", "bbPct"),
+    whiffPct: rowValue(row, "whiff_percent", "whiffPct"),
+  };
+}
+
+export function findBatterStatcastRow(savant, { playerId = null, name = null } = {}) {
+  const rows = rowsFromSavant(savant);
+  if (!rows.length) return null;
+
+  if (playerId != null) {
+    const id = String(playerId);
+    const match = rows.find(row => String(row?.player_id ?? "") === id);
+    if (match) return match;
+  }
+
+  const wanted = normalizeBatterName(name);
+  if (!wanted) return null;
+  return rows.find(row => nameCandidates(row).has(wanted)) ?? null;
+}
+
+export function getBatterStatcastProfile(savant, { playerId = null, name = null } = {}) {
+  return normalizeBatterStatcastRow(findBatterStatcastRow(savant, { playerId, name }));
+}
+
 /* ── Mapa jugador → equipo (cache 24h) ───────────────────────────── */
 const TEAM_MAP_TTL_MS = 24 * 60 * 60 * 1000;
 let playerTeamCache = { map: null, fetchedAt: 0 };

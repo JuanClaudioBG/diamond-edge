@@ -49,6 +49,18 @@ const STATCAST_POWER = {
   iso: "0.260",
 };
 
+const STATCAST_NORMALIZED = {
+  xba: 0.295,
+  xwoba: 0.381,
+  barrelPct: 14.2,
+  hardHitPct: 49.5,
+  exitVelo: 91.8,
+  launchAngle: 15.4,
+  kPct: 19.4,
+  bbPct: 11.2,
+  whiffPct: 22.5,
+};
+
 test("computeTotalBases calcula TB desde H/2B/3B/HR sin inventar nulls", () => {
   assert.equal(computeTotalBases({ hits: 3, doubles: 1, triples: 1, homeRuns: 1 }), 9);
   assert.equal(computeTotalBases({ hits: 2, doubles: 1, triples: 0, homeRuns: 0 }), 3);
@@ -163,4 +175,93 @@ test("buildBatterRadarCard mantiene output shape estable y sin cuotas/EV/VALOR",
   const json = JSON.stringify(card);
   assert.ok(!/"ev"|"cuota"|"valor"/i.test(json));
   assert.match(card.nota, /No entra a ROI, CLV ni a la muestra oficial/);
+});
+
+test("Statcast fuerte sube score de Hits/TB/HR de forma moderada y deja notas", () => {
+  const sample = computeRecentBatterSample(parseBatterGameLogs(TEN_GAMES, "2026-07-01T00:00:00Z"));
+  const baseHits = scoreHitsProfile(sample, null, { lineupSlot: 9 });
+  const strongHits = scoreHitsProfile(sample, STATCAST_NORMALIZED, { lineupSlot: 9 });
+  const baseTb = scoreTotalBasesProfile(sample, null, { lineupSlot: 9 });
+  const strongTb = scoreTotalBasesProfile(sample, STATCAST_NORMALIZED, { lineupSlot: 9 });
+  const baseHr = scoreHomeRunProfile(sample, null, {});
+  const strongHr = scoreHomeRunProfile(sample, STATCAST_NORMALIZED, {});
+
+  assert.ok(strongHits.score > baseHits.score, "Statcast de contacto debe sumar a hits");
+  assert.ok(strongTb.score > baseTb.score, "Statcast de poder/contacto debe sumar a TB");
+  assert.ok(strongHr.score > baseHr.score, "Statcast de poder debe sumar a HR");
+  assert.ok(strongHits.score - baseHits.score <= 3, "boost moderado para hits");
+  assert.ok(strongTb.score - baseTb.score <= 4, "boost moderado para TB");
+  assert.match(strongHits.notes.join(" "), /Statcast aporta/);
+  assert.match(strongTb.notes.join(" "), /Statcast aporta/);
+  assert.equal(strongHr.officialPick, false, "HR sigue sin pick oficial");
+});
+
+test("Statcast ausente o null conserva shape estable y no contamina score", () => {
+  const cardNoStatcast = buildBatterRadarCard({
+    playerId: 789,
+    name: "No Statcast",
+    teamName: "Texas Rangers",
+    lineupSlot: 5,
+    gameLogs: TEN_GAMES,
+    asOfISO: "2026-07-01T00:00:00Z",
+    statcastRow: null,
+  });
+  const cardNullStatcast = buildBatterRadarCard({
+    playerId: 789,
+    name: "Null Statcast",
+    teamName: "Texas Rangers",
+    lineupSlot: 5,
+    gameLogs: TEN_GAMES,
+    asOfISO: "2026-07-01T00:00:00Z",
+    statcastRow: {
+      xba: null,
+      xwoba: "",
+      barrelPct: "no-data",
+      hardHitPct: null,
+      exitVelo: undefined,
+      launchAngle: null,
+      kPct: "",
+      bbPct: null,
+      whiffPct: undefined,
+    },
+  });
+
+  assert.deepEqual(cardNoStatcast.statcast, {
+    xba: null,
+    xwoba: null,
+    barrelPct: null,
+    hardHitPct: null,
+    exitVelo: null,
+    launchAngle: null,
+    iso: null,
+    kPct: null,
+    bbPct: null,
+    whiffPct: null,
+  });
+  assert.deepEqual(cardNullStatcast.statcast, cardNoStatcast.statcast);
+  assert.equal(cardNullStatcast.markets.hits.score, cardNoStatcast.markets.hits.score);
+  assert.equal(cardNullStatcast.markets.totalBases.score, cardNoStatcast.markets.totalBases.score);
+  assert.equal(cardNullStatcast.markets.homeRuns.score, cardNoStatcast.markets.homeRuns.score);
+});
+
+test("buildBatterRadarCard acepta perfil Statcast normalizado player-level", () => {
+  const card = buildBatterRadarCard({
+    playerId: 901,
+    name: "Normalized Statcast",
+    teamName: "Seattle Mariners",
+    lineupSlot: 2,
+    gameLogs: TEN_GAMES,
+    asOfISO: "2026-07-01T00:00:00Z",
+    statcastRow: STATCAST_NORMALIZED,
+  });
+  assert.equal(card.statcast.xba, 0.295);
+  assert.equal(card.statcast.barrelPct, 14.2);
+  assert.equal(card.statcast.hardHitPct, 49.5);
+  assert.equal(card.statcast.exitVelo, 91.8);
+  assert.equal(card.statcast.launchAngle, 15.4);
+  assert.equal(card.statcast.kPct, 19.4);
+  assert.equal(card.statcast.bbPct, 11.2);
+  assert.equal(card.statcast.whiffPct, 22.5);
+  assert.equal(card.status, "PROP_PARA_REVISAR");
+  assert.equal(card.officialPick, false);
 });

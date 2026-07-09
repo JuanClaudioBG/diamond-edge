@@ -160,16 +160,20 @@ export function scoreHitsProfile(sample, statcastRow = {}, context = {}) {
   else if (m.atLeast1Last10?.rate >= 0.6) score += 2;
   else if (m.atLeast1Last10?.rate >= 0.5) score += 1;
 
-  const xba = statcastValue(statcastRow, "xba", "batting_avg");
+  const xba = statcastValue(statcastRow, "xba", "expected_batting_avg", "batting_avg");
   const xwoba = statcastValue(statcastRow, "xwoba");
-  const hardHit = statcastValue(statcastRow, "hard_hit_percent");
-  if (xba != null && xba >= 0.280) score += 1;
-  if (xwoba != null && xwoba >= 0.350) score += 1;
-  if (hardHit != null && hardHit >= 42) score += 1;
+  const hardHit = statcastValue(statcastRow, "hard_hit_percent", "hardHitPct");
+  const statcastBoost = [
+    xba != null && xba >= 0.280,
+    xwoba != null && xwoba >= 0.350,
+    hardHit != null && hardHit >= 42,
+  ].filter(Boolean).length;
+  score += statcastBoost;
   if (context.lineupSlot != null && Number(context.lineupSlot) <= 5) score += 1;
 
   const finalScore = roundScore(score);
   if (sample?.insufficient) notes.push("muestra insuficiente para hits");
+  if (statcastBoost > 0) notes.push("Statcast aporta al perfil de hits sin reemplazar la muestra reciente.");
   return {
     key: "hits",
     label: profileLabel(finalScore, sample?.insufficient),
@@ -196,18 +200,22 @@ export function scoreTotalBasesProfile(sample, statcastRow = {}, context = {}) {
   else if (m.atLeast2Last10?.rate >= 0.5) score += 2;
   else if (m.atLeast2Last10?.rate >= 0.4) score += 1;
 
-  const barrel = statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent");
-  const hardHit = statcastValue(statcastRow, "hard_hit_percent");
-  const exitVelo = statcastValue(statcastRow, "exit_velocity_avg");
+  const barrel = statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent", "barrelPct");
+  const hardHit = statcastValue(statcastRow, "hard_hit_percent", "hardHitPct");
+  const exitVelo = statcastValue(statcastRow, "exit_velocity_avg", "exitVelo");
   const iso = statcastValue(statcastRow, "iso");
-  if (barrel != null && barrel >= 9) score += 1;
-  if (hardHit != null && hardHit >= 44) score += 1;
-  if (exitVelo != null && exitVelo >= 90) score += 1;
-  if (iso != null && iso >= 0.180) score += 1;
+  const statcastBoost = [
+    barrel != null && barrel >= 9,
+    hardHit != null && hardHit >= 44,
+    exitVelo != null && exitVelo >= 90,
+    iso != null && iso >= 0.180,
+  ].filter(Boolean).length;
+  score += statcastBoost;
   if (context.lineupSlot != null && Number(context.lineupSlot) <= 5) score += 0.5;
 
   const finalScore = roundScore(score);
   if (sample?.insufficient) notes.push("muestra insuficiente para total bases");
+  if (statcastBoost > 0) notes.push("Statcast aporta al perfil de bases totales sin inventar linea.");
   return {
     key: "totalBases",
     label: profileLabel(finalScore, sample?.insufficient),
@@ -229,10 +237,10 @@ export function scoreHomeRunProfile(sample, statcastRow = {}, context = {}) {
   if (m.atLeast1Last10?.hits >= 3) score += 2;
   else if (m.atLeast1Last10?.hits >= 1) score += 1;
 
-  const barrel = statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent");
-  const hardHit = statcastValue(statcastRow, "hard_hit_percent");
-  const exitVelo = statcastValue(statcastRow, "exit_velocity_avg");
-  const launchAngle = statcastValue(statcastRow, "launch_angle", "launch_angle_avg");
+  const barrel = statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent", "barrelPct");
+  const hardHit = statcastValue(statcastRow, "hard_hit_percent", "hardHitPct");
+  const exitVelo = statcastValue(statcastRow, "exit_velocity_avg", "exitVelo");
+  const launchAngle = statcastValue(statcastRow, "launch_angle", "launch_angle_avg", "launchAngle");
   const iso = statcastValue(statcastRow, "iso");
   if (barrel != null && barrel >= 12) score += 2;
   if (hardHit != null && hardHit >= 48) score += 1.5;
@@ -321,13 +329,16 @@ export function buildBatterRadarCard({
     cutoff: String(asOfISO).slice(0, 10),
     sample,
     statcast: {
-      xba: statcastValue(statcastRow, "xba", "batting_avg"),
+      xba: statcastValue(statcastRow, "xba", "expected_batting_avg", "batting_avg"),
       xwoba: statcastValue(statcastRow, "xwoba"),
-      barrelPct: statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent"),
-      hardHitPct: statcastValue(statcastRow, "hard_hit_percent"),
-      exitVelo: statcastValue(statcastRow, "exit_velocity_avg"),
-      launchAngle: statcastValue(statcastRow, "launch_angle", "launch_angle_avg"),
+      barrelPct: statcastValue(statcastRow, "barrel_batted_rate", "barrel_percent", "barrelPct"),
+      hardHitPct: statcastValue(statcastRow, "hard_hit_percent", "hardHitPct"),
+      exitVelo: statcastValue(statcastRow, "exit_velocity_avg", "exitVelo"),
+      launchAngle: statcastValue(statcastRow, "launch_angle", "launch_angle_avg", "launchAngle"),
       iso: statcastValue(statcastRow, "iso"),
+      kPct: statcastValue(statcastRow, "k_percent", "kPct"),
+      bbPct: statcastValue(statcastRow, "bb_percent", "bbPct"),
+      whiffPct: statcastValue(statcastRow, "whiff_percent", "whiffPct"),
     },
     markets,
     nota: "Linea no disponible — PROP_PARA_REVISAR. Analisis informativo. No entra a ROI, CLV ni a la muestra oficial.",

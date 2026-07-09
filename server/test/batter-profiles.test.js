@@ -5,7 +5,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, BATTER_FIELDS } from "../batter-profiles.js";
+import {
+  buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, BATTER_FIELDS,
+  findBatterStatcastRow, getBatterStatcastProfile, normalizeBatterName,
+} from "../batter-profiles.js";
 
 /* Fixture: filas estilo CSV Savant (player_id, pa + métricas; SIN team_id) */
 const row = (pid, pa, xwoba, kPct) => ({
@@ -119,4 +122,58 @@ test("fmtBatterTeam: con datos formatea, sin datos mantiene mensaje actual; cobe
 test("BATTER_FIELDS sin cambios de contrato (7 métricas, pa NO es métrica)", () => {
   assert.equal(BATTER_FIELDS.length, 7);
   assert.ok(!BATTER_FIELDS.includes("pa"), "pa es peso, no métrica promediada");
+});
+
+test("Statcast player-level: player_id es la fuente preferida sobre nombre", () => {
+  const rows = savantMap([
+    { ...row(100, 100, 0.300, 20), player_name: "Nombre Repetido", xba: "0.250" },
+    { ...row(200, 100, 0.390, 18), player_name: "Nombre Repetido", xba: "0.310", launch_angle: "14.2" },
+  ]);
+  const found = findBatterStatcastRow(rows, { playerId: 200, name: "Nombre Repetido" });
+  assert.equal(found.player_id, "200");
+  const profile = getBatterStatcastProfile(rows, { playerId: 200, name: "Nombre Repetido" });
+  assert.equal(profile.playerId, "200");
+  assert.equal(profile.xba, 0.310);
+  assert.equal(profile.xwoba, 0.390);
+  assert.equal(profile.launchAngle, 14.2);
+});
+
+test("Statcast player-level: fallback por nombre normalizado y formato 'Apellido, Nombre'", () => {
+  const rows = savantMap([
+    { ...row(300, 80, 0.345, 22), "last_name, first_name": "Judge, Aaron", xba: "0.301" },
+  ]);
+  assert.equal(normalizeBatterName("Áaron   Judge"), "aaron judge");
+  const found = findBatterStatcastRow(rows, { name: "Aaron Judge" });
+  assert.equal(found.player_id, "300");
+  const reverse = findBatterStatcastRow(rows, { name: "Judge Aaron" });
+  assert.equal(reverse.player_id, "300");
+});
+
+test("Statcast player-level: métrica ausente vuelve null explícito", () => {
+  const rows = savantMap([
+    {
+      player_id: "400",
+      player_name: "Partial Batter",
+      xwoba: "0.333",
+      barrel_batted_rate: "",
+      hard_hit_percent: "not-a-number",
+      exit_velocity_avg: "90.1",
+    },
+  ]);
+  const profile = getBatterStatcastProfile(rows, { playerId: 400 });
+  assert.equal(profile.xba, null);
+  assert.equal(profile.xwoba, 0.333);
+  assert.equal(profile.barrelPct, null);
+  assert.equal(profile.hardHitPct, null);
+  assert.equal(profile.exitVelo, 90.1);
+  assert.equal(profile.kPct, null);
+  assert.equal(profile.bbPct, null);
+  assert.equal(profile.whiffPct, null);
+});
+
+test("Statcast player-level: sin match devuelve null sin afectar agregado por equipo", () => {
+  const rows = savantMap([row(1, 100, 0.300, 20)]);
+  assert.equal(getBatterStatcastProfile(rows, { playerId: 999, name: "No Existe" }), null);
+  const { profiles } = buildBatterProfiles(rows, teamMap([[1, 147]]));
+  assert.ok(Math.abs(profiles.get("147").xwoba - 0.300) < 1e-9);
 });
