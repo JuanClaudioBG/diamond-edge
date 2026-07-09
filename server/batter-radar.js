@@ -12,6 +12,7 @@
  */
 
 export const BATTER_RADAR_MIN_VALID_GAMES = 8;
+const MLB_BASE = "https://statsapi.mlb.com/api/v1";
 
 const num = (v) => {
   if (v == null || v === "") return null;
@@ -342,5 +343,140 @@ export function buildBatterRadarCard({
     },
     markets,
     nota: "Linea no disponible — PROP_PARA_REVISAR. Analisis informativo. No entra a ROI, CLV ni a la muestra oficial.",
+  };
+}
+
+function playerNameFromBoxscore(players, playerId) {
+  return players?.[`ID${playerId}`]?.person?.fullName ?? String(playerId);
+}
+
+function cardScore(card) {
+  return Math.max(
+    card?.markets?.hits?.score ?? 0,
+    card?.markets?.totalBases?.score ?? 0,
+    card?.markets?.homeRuns?.score ?? 0
+  );
+}
+
+export async function fetchBatterGameLogs({ playerId, season, fetcher = fetch } = {}) {
+  if (!playerId) return [];
+  const r = await fetcher(`${MLB_BASE}/people/${playerId}/stats?stats=gameLog&group=hitting&season=${season}`);
+  if (!r?.ok) throw new Error(`HTTP ${r?.status ?? "?"}`);
+  const d = await r.json();
+  const splits = d?.stats?.[0]?.splits;
+  if (!Array.isArray(splits)) throw new Error("estructura inesperada (sin stats[0].splits)");
+  return splits;
+}
+
+export async function buildBatterRadarTeam({
+  teamName,
+  battingOrder = [],
+  players = {},
+  savantMap = null,
+  getStatcastProfile = null,
+  asOfISO = new Date().toISOString(),
+  season = new Date(asOfISO).getFullYear(),
+  maxCards = 4,
+  fetcher = fetch,
+} = {}) {
+  const order = (battingOrder ?? []).map(String).filter(Boolean);
+  if (!order.length) {
+    return {
+      teamName,
+      lineupConfirmed: false,
+      status: "LINEUP_NO_CONFIRMADO",
+      cards: [],
+      nota: "Lineup no confirmado — Batter Radar compacto; no se inventan jugadores.",
+    };
+  }
+
+  const candidates = order.slice(0, 6);
+  const cards = await Promise.all(candidates.map(async (playerId, idx) => {
+    const lineupSlot = idx + 1;
+    const name = playerNameFromBoxscore(players, playerId);
+    let gameLogs = [];
+    try {
+      gameLogs = await fetchBatterGameLogs({ playerId, season, fetcher });
+    } catch (err) {
+      gameLogs = [];
+    }
+    const statcastRow = typeof getStatcastProfile === "function"
+      ? getStatcastProfile(savantMap, { playerId, name })
+      : null;
+    return buildBatterRadarCard({
+      playerId,
+      name,
+      teamName,
+      lineupSlot,
+      gameLogs,
+      asOfISO,
+      statcastRow,
+      context: { lineupConfirmed: true },
+    });
+  }));
+
+  const ranked = cards
+    .sort((a, b) => (cardScore(b) - cardScore(a)) || (a.lineupSlot - b.lineupSlot))
+    .slice(0, maxCards);
+
+  return {
+    teamName,
+    lineupConfirmed: true,
+    status: "OK",
+    cards: ranked,
+    maxCards,
+    candidates: candidates.length,
+  };
+}
+
+export async function buildBatterRadar({
+  awayTeamName,
+  homeTeamName,
+  awayOrder = [],
+  homeOrder = [],
+  awayPlayers = {},
+  homePlayers = {},
+  savantMap = null,
+  getStatcastProfile = null,
+  asOfISO = new Date().toISOString(),
+  season = new Date(asOfISO).getFullYear(),
+  maxCardsPerTeam = 4,
+  fetcher = fetch,
+} = {}) {
+  const [away, home] = await Promise.all([
+    buildBatterRadarTeam({
+      teamName: awayTeamName,
+      battingOrder: awayOrder,
+      players: awayPlayers,
+      savantMap,
+      getStatcastProfile,
+      asOfISO,
+      season,
+      maxCards: maxCardsPerTeam,
+      fetcher,
+    }),
+    buildBatterRadarTeam({
+      teamName: homeTeamName,
+      battingOrder: homeOrder,
+      players: homePlayers,
+      savantMap,
+      getStatcastProfile,
+      asOfISO,
+      season,
+      maxCards: maxCardsPerTeam,
+      fetcher,
+    }),
+  ]);
+  const anyLineup = away.lineupConfirmed || home.lineupConfirmed;
+  return {
+    source: "MLB Stats API gameLog + Baseball Savant",
+    status: anyLineup ? "OK" : "LINEUP_NO_CONFIRMADO",
+    cutoff: String(asOfISO).slice(0, 10),
+    maxCardsPerTeam,
+    away,
+    home,
+    nota: anyLineup
+      ? "Batter Radar informativo. Todos los mercados quedan PROP_PARA_REVISAR hasta verificar linea real."
+      : "Lineups no confirmados — Batter Radar compacto; no se inventan jugadores.",
   };
 }

@@ -10,7 +10,8 @@ import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
 import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, enforceMlValueConsistency, enforceTotalDirection, relabelImpliedNoVigNarratives } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
-import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage } from "./batter-profiles.js";
+import { buildBatterRadar } from "./batter-radar.js";
+import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
 
 dotenv.config();
 
@@ -895,6 +896,33 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     } catch (radarErr) {
       console.error("[Radar] Error:", radarErr.message);
       analysis.radar = null;
+    }
+
+    /* ── Batter Props Radar v1: informativo, desde lineup confirmado y game
+       logs reales. NO entra al prompt, no consulta props/odds, no crea picks
+       oficiales, no calcula EV ni participa en ROI/CLV. ── */
+    try {
+      analysis.batterRadar = await buildBatterRadar({
+        awayTeamName: a.team.name,
+        homeTeamName: h.team.name,
+        awayOrder: aOrder,
+        homeOrder: hOrder,
+        awayPlayers: aPlayers,
+        homePlayers: hPlayers,
+        savantMap: batterMap,
+        getStatcastProfile: getBatterStatcastProfile,
+        asOfISO: gameDate ?? new Date().toISOString(),
+        season,
+        maxCardsPerTeam: 4,
+      });
+    } catch (batterRadarErr) {
+      console.error("[BatterRadar] Error:", batterRadarErr.message);
+      analysis.batterRadar = {
+        status: "NO_DISPONIBLE",
+        away: { teamName: a.team.name, lineupConfirmed: aOrder.length > 0, cards: [] },
+        home: { teamName: h.team.name, lineupConfirmed: hOrder.length > 0, cards: [] },
+        nota: "Batter Radar no disponible; no se inventan jugadores ni mercados.",
+      };
     }
 
     /* ── Registro para backtest (ver docs/BACKTEST_METHODOLOGY.md) ── */

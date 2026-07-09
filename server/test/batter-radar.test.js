@@ -12,7 +12,9 @@ import {
   scoreTotalBasesProfile,
   scoreHomeRunProfile,
   buildBatterRadarCard,
+  buildBatterRadar,
 } from "../batter-radar.js";
+import { readFileSync } from "fs";
 
 const split = (date, stat) => ({ date, stat });
 const batting = ({ h, d = 0, t = 0, hr = 0, rbi = 0, ab = 4, pa = 4, tb } = {}) => ({
@@ -264,4 +266,95 @@ test("buildBatterRadarCard acepta perfil Statcast normalizado player-level", () 
   assert.equal(card.statcast.whiffPct, 22.5);
   assert.equal(card.status, "PROP_PARA_REVISAR");
   assert.equal(card.officialPick, false);
+});
+
+test("buildBatterRadar con lineup confirmado genera shape estable y limita cards por equipo", async () => {
+  const order = ["101", "102", "103", "104", "105", "106", "107"];
+  const players = Object.fromEntries(order.map(id => [`ID${id}`, { person: { fullName: `Batter ${id}` } }]));
+  const logsById = Object.fromEntries(order.map((id, idx) => [
+    id,
+    TEN_GAMES.map((g, gameIdx) => split(g.date, batting({
+      h: idx < 2 ? 2 : (gameIdx % 3 === 0 ? 1 : 0),
+      d: idx === 0 ? 1 : 0,
+      hr: idx === 1 && gameIdx % 4 === 0 ? 1 : 0,
+      rbi: idx < 3 ? 1 : 0,
+    }))),
+  ]));
+  const fetcher = async (url) => {
+    const id = String(url).match(/people\/(\d+)\/stats/)?.[1];
+    return { ok: true, json: async () => ({ stats: [{ splits: logsById[id] ?? [] }] }) };
+  };
+  const savant = new Map(order.map((id, idx) => [id, {
+    player_id: id,
+    player_name: `Batter ${id}`,
+    xwoba: idx < 2 ? "0.380" : "0.300",
+    xba: idx < 2 ? "0.295" : "0.240",
+    barrel_batted_rate: idx === 1 ? "15.0" : "6.0",
+    hard_hit_percent: idx < 2 ? "49.0" : "35.0",
+    exit_velocity_avg: idx < 2 ? "91.0" : "87.0",
+    launch_angle: "14.0",
+  }]));
+
+  const radar = await buildBatterRadar({
+    awayTeamName: "Away Team",
+    homeTeamName: "Home Team",
+    awayOrder: order,
+    homeOrder: order.slice(0, 5),
+    awayPlayers: players,
+    homePlayers: players,
+    savantMap: savant,
+    getStatcastProfile: (map, q) => map.get(String(q.playerId)) ?? null,
+    asOfISO: "2026-07-01T00:00:00Z",
+    season: 2026,
+    maxCardsPerTeam: 4,
+    fetcher,
+  });
+
+  assert.equal(radar.status, "OK");
+  assert.equal(radar.away.lineupConfirmed, true);
+  assert.equal(radar.home.lineupConfirmed, true);
+  assert.equal(radar.away.cards.length, 4);
+  assert.equal(radar.home.cards.length, 4);
+  assert.ok(radar.away.cards.every(c => Number(c.lineupSlot) <= 6), "solo slots 1-6 son candidatos F3");
+  assert.ok(radar.away.cards.every(c => c.status === "PROP_PARA_REVISAR"));
+  assert.ok(radar.away.cards.every(c => c.officialPick === false));
+  assert.ok(radar.away.cards.every(c => Object.values(c.markets).every(m => m.line === null)));
+  assert.equal(radar.away.cards[0].name, "Batter 101", "prioriza scores altos dentro del top lineup");
+  const json = JSON.stringify(radar);
+  assert.ok(!/"ev"|"cuota"|"valor"/i.test(json));
+});
+
+test("buildBatterRadar sin lineup confirmado no crashea ni inventa jugadores", async () => {
+  const radar = await buildBatterRadar({
+    awayTeamName: "Away Team",
+    homeTeamName: "Home Team",
+    awayOrder: [],
+    homeOrder: [],
+    asOfISO: "2026-07-01T00:00:00Z",
+    fetcher: async () => { throw new Error("no deberia llamarse"); },
+  });
+  assert.equal(radar.status, "LINEUP_NO_CONFIRMADO");
+  assert.equal(radar.away.lineupConfirmed, false);
+  assert.equal(radar.home.lineupConfirmed, false);
+  assert.deepEqual(radar.away.cards, []);
+  assert.deepEqual(radar.home.cards, []);
+  assert.match(radar.nota, /no se inventan jugadores/);
+});
+
+test("integración backend: index arma batterRadar post-modelo y evaluation/settle no lo consumen", () => {
+  const indexSrc = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+  const evaluateSrc = readFileSync(new URL("../backtest/evaluate.js", import.meta.url), "utf8");
+  const settleSrc = readFileSync(new URL("../backtest/settle.js", import.meta.url), "utf8");
+  const iPrompt = indexSrc.indexOf("const prompt =");
+  const iModel = indexSrc.indexOf("client.messages.create");
+  const iRadar = indexSrc.indexOf("analysis.radar =");
+  const iBatter = indexSrc.indexOf("analysis.batterRadar = await buildBatterRadar");
+  const iLog = indexSrc.indexOf("output_json:");
+  assert.ok(iPrompt > -1 && iModel > -1 && iRadar > -1 && iBatter > -1 && iLog > -1);
+  assert.ok(iPrompt < iModel, "el prompt se construye antes del modelo");
+  assert.ok(iModel < iBatter, "batterRadar no entra al prompt ni al request al modelo");
+  assert.ok(iRadar < iBatter, "Radar de Ponches queda antes e intacto");
+  assert.ok(iBatter < iLog, "batterRadar se guarda en output_json");
+  assert.ok(!/batterRadar/.test(evaluateSrc), "evaluate no consume batterRadar");
+  assert.ok(!/batterRadar/.test(settleSrc), "settle no consume batterRadar");
 });
