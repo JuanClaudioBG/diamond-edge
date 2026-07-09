@@ -1,5 +1,5 @@
 import { advCls, advLbl } from "../utils";
-import { totalDisplay, isStarterKPropCoveredByRadar, pickBadge } from "../analysis-display";
+import { totalDisplay, isStarterKPropCoveredByRadar, pickBadge, batterRadarDisplay } from "../analysis-display";
 
 export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick }) {
   if (analyzing) return <div className="ld"><span className="sp" />ANALIZANDO CON IA…</div>;
@@ -31,6 +31,7 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
 
   const sc = analysis.calificacionGeneral || 5;
   const scC = sc >= 7 ? "var(--gn)" : sc >= 5 ? "var(--au)" : "var(--rd)";
+  const batterRadar = batterRadarDisplay(analysis.batterRadar);
 
   return (
     <div className="acont">
@@ -165,6 +166,70 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {batterRadar.visible && (
+        <div className="acard">
+          <div className="acard-hdr">🎯 RADAR DE BATEADORES</div>
+          <div className="acard-b">
+            {batterRadar.status === "LINEUP_NO_CONFIRMADO" ? (
+              <div style={{ fontFamily: "var(--fm)", fontSize: 11, color: "var(--au)", lineHeight: 1.6 }}>
+                {batterRadar.message}
+              </div>
+            ) : (
+              batterRadar.teams.map(team => (
+                <div key={team.side} style={{ marginBottom: 10 }}>
+                  <div style={{ fontFamily: "var(--fm)", fontSize: 9, letterSpacing: 1, textTransform: "uppercase", color: team.side === "Local" ? "var(--gn)" : "var(--cy)", marginBottom: 5 }}>
+                    {team.side} · {team.teamName}
+                  </div>
+                  {team.cards.length === 0 ? (
+                    <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--mu)", padding: "3px 0 7px" }}>
+                      {team.lineupConfirmed ? "Sin bateadores con muestra suficiente para mostrar." : "Lineup no confirmado — sin jugadores inventados."}
+                    </div>
+                  ) : team.cards.map((card, idx) => (
+                    <div key={`${team.side}-${card.name}-${idx}`} style={{ borderTop: idx === 0 ? "none" : "1px solid var(--b1)", padding: idx === 0 ? "0 0 8px" : "8px 0", fontFamily: "var(--fm)", fontSize: 10, color: "var(--dm)", lineHeight: 1.55 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <div>
+                          <span style={{ color: "var(--tx)", fontWeight: 700 }}>{card.name}</span>
+                          {card.lineupSlot != null && <span style={{ color: "var(--mu)" }}> · Slot {card.lineupSlot}</span>}
+                        </div>
+                        <span style={{ color: card.insufficient ? "var(--au)" : "var(--cy)" }}>
+                          {card.label}{card.score != null ? ` · ${card.score}/10` : ""}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                        {card.chips.map(chip => (
+                          <span key={chip.key} style={{ border: "1px solid var(--b1)", borderRadius: 6, padding: "2px 5px", color: "var(--mu)" }}>
+                            <span style={{ color: "var(--tx)" }}>{chip.label}</span> · {chip.status}
+                          </span>
+                        ))}
+                      </div>
+                      {(card.recent.hitsLast5 || card.recent.totalBasesLast5) && (
+                        <div style={{ marginTop: 5 }}>
+                          {card.recent.hitsLast5 && <>H últimos 5: <span style={{ color: "var(--cy)" }}>{card.recent.hitsLast5}</span></>}
+                          {card.recent.hitsValidLast10 != null && <> · H válidos 10: {card.recent.hitsValidLast10}/10</>}
+                          {card.recent.totalBasesLast5 && <> · TB últimos 5: <span style={{ color: "var(--cy)" }}>{card.recent.totalBasesLast5}</span></>}
+                          {card.recent.totalBasesAvgLast10 != null && <> · TB prom 10: {card.recent.totalBasesAvgLast10}</>}
+                        </div>
+                      )}
+                      {card.statcast.length > 0 && (
+                        <div style={{ color: "var(--mu)" }}>Statcast: {card.statcast.join(" · ")}</div>
+                      )}
+                      {card.notes.length > 0 && (
+                        <div style={{ color: "var(--au)", fontSize: 9 }}>{card.notes.join(" · ")}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))
+            )}
+            {batterRadar.status !== "LINEUP_NO_CONFIRMADO" && (
+              <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginTop: 3 }}>
+                Radar informativo · PROP PARA REVISAR hasta verificar línea real. No entra a ROI, CLV ni muestra oficial.
+              </div>
+            )}
           </div>
         </div>
       )}

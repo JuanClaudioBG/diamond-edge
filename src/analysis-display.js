@@ -79,3 +79,77 @@ export function isStarterKPropCoveredByRadar(pick, radar) {
     return last.length > 2 && text.includes(last);
   });
 }
+
+const BATTER_MARKETS = [
+  ["hits", "Hits"],
+  ["totalBases", "Total Bases"],
+  ["homeRuns", "HR"],
+  ["rbi", "RBI"],
+];
+
+const propStatus = (m) => m?.line ? "SEÑAL" : "PROP PARA REVISAR";
+const bestBatterScore = (card) => {
+  const scores = ["hits", "totalBases", "homeRuns"]
+    .map(k => card?.markets?.[k]?.score)
+    .filter(v => v != null);
+  return scores.length ? Math.max(...scores) : null;
+};
+const shortSeries = (xs) => Array.isArray(xs) && xs.length ? xs.map(v => v == null ? "–" : v).join(" · ") : null;
+
+export function batterRadarDisplay(radar) {
+  if (!radar) return { visible: false };
+  if (radar.status === "LINEUP_NO_CONFIRMADO") {
+    return {
+      visible: true,
+      status: "LINEUP_NO_CONFIRMADO",
+      message: "Lineup no confirmado — Radar de Bateadores pendiente.",
+      teams: [],
+    };
+  }
+  const teams = [
+    ["Visitante", radar.away],
+    ["Local", radar.home],
+  ].map(([side, team]) => ({
+    side,
+    teamName: team?.teamName ?? side,
+    lineupConfirmed: team?.lineupConfirmed === true,
+    cards: (team?.cards ?? []).map(card => {
+      const hitSample = card.sample?.metrics?.hits;
+      const tbSample  = card.sample?.metrics?.totalBases;
+      const notes = BATTER_MARKETS
+        .flatMap(([key]) => card.markets?.[key]?.notes ?? [])
+        .filter(Boolean)
+        .slice(0, 2);
+      const statcast = [
+        ["xwOBA", card.statcast?.xwoba, 3],
+        ["xBA", card.statcast?.xba, 3],
+        ["Barrel%", card.statcast?.barrelPct, 1],
+        ["Hard Hit%", card.statcast?.hardHitPct, 1],
+        ["Exit Velo", card.statcast?.exitVelo, 1],
+      ].filter(([, v]) => v != null)
+       .map(([label, v, digits]) => `${label} ${Number(v).toFixed(digits)}`);
+      return {
+        name: card.name,
+        lineupSlot: card.lineupSlot ?? null,
+        label: card.label ?? "Radar",
+        score: bestBatterScore(card),
+        insufficient: card.insufficient === true,
+        chips: BATTER_MARKETS.map(([key, label]) => ({
+          key,
+          label,
+          status: propStatus(card.markets?.[key]),
+          line: card.markets?.[key]?.line ?? null,
+        })),
+        recent: {
+          hitsLast5: shortSeries(hitSample?.last5),
+          hitsValidLast10: hitSample?.validLast10 ?? null,
+          totalBasesLast5: shortSeries(tbSample?.last5),
+          totalBasesAvgLast10: tbSample?.avgLast10 ?? null,
+        },
+        statcast,
+        notes,
+      };
+    }),
+  }));
+  return { visible: true, status: radar.status ?? "OK", teams };
+}

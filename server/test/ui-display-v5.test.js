@@ -4,7 +4,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { totalDisplay, isStarterKPropCoveredByRadar } from "../../src/analysis-display.js";
+import { readFileSync } from "fs";
+import { totalDisplay, isStarterKPropCoveredByRadar, batterRadarDisplay } from "../../src/analysis-display.js";
 
 /* ═══ Total: proyección ≠ línea real ≠ señal ═══ */
 
@@ -64,4 +65,71 @@ test("compatibilidad: sin radar, radar vacío o pick nulo → false sin crash", 
   assert.equal(isStarterKPropCoveredByRadar(kProp("Eovaldi Over strikeouts"), {}), false);
   assert.equal(isStarterKPropCoveredByRadar(null, RADAR), false);
   assert.equal(isStarterKPropCoveredByRadar({ tipo: "Moneyline", pick: "Eovaldi strikeouts" }, RADAR), false, "solo aplica a props");
+});
+
+/* ═══ Batter Radar UI compacta ═══ */
+
+const batterCard = {
+  name: "Aaron Judge",
+  lineupSlot: 2,
+  label: "Perfil calificado",
+  insufficient: false,
+  statcast: { xwoba: 0.381, xba: 0.295, barrelPct: 14.2, hardHitPct: 49.5, exitVelo: 91.8 },
+  sample: {
+    metrics: {
+      hits: { last5: [1, 2, 1, 0, 2], validLast10: 10 },
+      totalBases: { last5: [1, 3, 1, 0, 5], avgLast10: 2.1 },
+    },
+  },
+  markets: {
+    hits:       { score: 7, status: "PROP_PARA_REVISAR", line: null, notes: ["Statcast aporta al perfil de hits."] },
+    totalBases: { score: 6, status: "PROP_PARA_REVISAR", line: null, notes: [] },
+    homeRuns:  { score: 4, status: "PROP_PARA_REVISAR", line: null, notes: ["HR es evento raro."] },
+    rbi:       { score: null, status: "PROP_PARA_REVISAR", line: null, notes: [] },
+  },
+};
+
+test("batterRadarDisplay tolera batterRadar null: no visible", () => {
+  assert.deepEqual(batterRadarDisplay(null), { visible: false });
+});
+
+test("batterRadarDisplay muestra LINEUP_NO_CONFIRMADO sin inventar jugadores", () => {
+  const d = batterRadarDisplay({ status: "LINEUP_NO_CONFIRMADO", away: { cards: [] }, home: { cards: [] } });
+  assert.equal(d.visible, true);
+  assert.equal(d.status, "LINEUP_NO_CONFIRMADO");
+  assert.match(d.message, /Lineup no confirmado/);
+  assert.deepEqual(d.teams, []);
+});
+
+test("batterRadarDisplay muestra cards OK con chips PROP PARA REVISAR y sin VALOR", () => {
+  const d = batterRadarDisplay({
+    status: "OK",
+    away: { teamName: "Yankees", lineupConfirmed: true, cards: [batterCard] },
+    home: { teamName: "Mets", lineupConfirmed: true, cards: [] },
+  });
+  assert.equal(d.visible, true);
+  assert.equal(d.teams[0].side, "Visitante");
+  assert.equal(d.teams[0].cards[0].name, "Aaron Judge");
+  assert.equal(d.teams[0].cards[0].score, 7);
+  assert.deepEqual(d.teams[0].cards[0].chips.map(c => c.status), [
+    "PROP PARA REVISAR", "PROP PARA REVISAR", "PROP PARA REVISAR", "PROP PARA REVISAR",
+  ]);
+  assert.match(d.teams[0].cards[0].recent.hitsLast5, /1 · 2 · 1/);
+  assert.ok(d.teams[0].cards[0].statcast.some(s => /xwOBA 0\.381/.test(s)));
+  assert.ok(d.teams[0].cards[0].statcast.some(s => /Exit Velo 91\.8/.test(s)));
+  const json = JSON.stringify(d);
+  assert.ok(!/VALOR\s+(ALTO|MEDIO|BAJO)/i.test(json));
+  assert.ok(!/cuota/i.test(json));
+});
+
+test("AnalysisTab incluye sección Batter Radar compacta sin botón PARLAY dentro del bloque", () => {
+  const src = readFileSync(new URL("../../src/components/AnalysisTab.jsx", import.meta.url), "utf8");
+  const start = src.indexOf("batterRadar.visible");
+  const end = src.indexOf("<div className=\"acard-hdr\">🔢 Total de Carreras</div>");
+  assert.ok(start > -1 && end > start, "bloque Batter Radar existe antes del Total");
+  const block = src.slice(start, end);
+  assert.match(block, /RADAR DE BATEADORES/);
+  assert.match(block, /PROP PARA REVISAR/);
+  assert.ok(!/onAddPick|className="padd"|\+ PARLAY/.test(block), "Batter Radar no ofrece añadir al parlay");
+  assert.ok(!/VALOR\s+(ALTO|MEDIO|BAJO)/i.test(block), "Batter Radar no usa badges financieros");
 });
