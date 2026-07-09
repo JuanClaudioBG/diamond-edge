@@ -82,19 +82,90 @@ export function isStarterKPropCoveredByRadar(pick, radar) {
 
 const BATTER_MARKETS = [
   ["hits", "Hits"],
-  ["totalBases", "Total Bases"],
+  ["totalBases", "TB"],
   ["homeRuns", "HR"],
   ["rbi", "RBI"],
 ];
 
-const propStatus = (m) => m?.line ? "SEÑAL" : "PROP PARA REVISAR";
+const propStatus = (key, m) => {
+  if (key === "homeRuns") return "SOLO ÁNGULO";
+  if (key === "rbi") return "BAJA CONFIANZA";
+  return m?.line ? "SEÑAL" : "PROP PARA REVISAR";
+};
 const bestBatterScore = (card) => {
   const scores = ["hits", "totalBases", "homeRuns"]
     .map(k => card?.markets?.[k]?.score)
     .filter(v => v != null);
   return scores.length ? Math.max(...scores) : null;
 };
-const shortSeries = (xs) => Array.isArray(xs) && xs.length ? xs.map(v => v == null ? "–" : v).join(" · ") : null;
+const fmt1 = (v) => v == null ? null : Number(v).toFixed(1);
+const shortSeries = (xs, joiner = "-") => Array.isArray(xs) && xs.length ? xs.map(v => v == null ? "–" : v).join(joiner) : null;
+const marketScore = (card, key) => card?.markets?.[key]?.score ?? null;
+const hasPowerAngle = (card) => {
+  const hrScore = marketScore(card, "homeRuns");
+  const s = card?.statcast ?? {};
+  return (hrScore != null && hrScore >= 5)
+    || (s.barrelPct != null && s.barrelPct >= 12)
+    || (s.hardHitPct != null && s.hardHitPct >= 48)
+    || (s.exitVelo != null && s.exitVelo >= 91);
+};
+
+const batterAngleForCard = (card, teamName) => {
+  if (!card || card.insufficient) return null;
+  const candidates = [];
+  const hitsScore = marketScore(card, "hits");
+  const tbScore = marketScore(card, "totalBases");
+  const hrScore = marketScore(card, "homeRuns");
+  const rbiConfidence = card.markets?.rbi?.confidence;
+
+  if (hitsScore != null && hitsScore >= 5.5) candidates.push({ label: "Hits", weight: hitsScore + 2 });
+  if (tbScore != null && tbScore >= 5.5) candidates.push({ label: "TB", weight: tbScore + 1.5 });
+  if (hasPowerAngle(card)) candidates.push({ label: "HR profile", weight: (hrScore ?? 4) - 0.5 });
+  if (rbiConfidence && rbiConfidence !== "BAJA") candidates.push({ label: "RBI contexto", weight: 2 });
+
+  if (!candidates.length) {
+    const fallback = [
+      { label: "Hits", weight: hitsScore ?? -1 },
+      { label: "TB", weight: tbScore ?? -1 },
+    ].sort((a, b) => b.weight - a.weight)[0];
+    if (!fallback || fallback.weight < 4.5) return null;
+    candidates.push(fallback);
+  }
+
+  candidates.sort((a, b) => b.weight - a.weight);
+  const labels = candidates.slice(0, 2).map(c => c.label).join("/");
+  const weight = Math.max(...candidates.map(c => c.weight));
+  return {
+    teamName,
+    name: card.name,
+    label: labels,
+    weight,
+  };
+};
+
+const compactNotes = (card) => BATTER_MARKETS
+  .flatMap(([key]) => card.markets?.[key]?.notes ?? [])
+  .filter(Boolean)
+  .slice(0, 1);
+
+const compactRecent = (card) => {
+  const hitSample = card.sample?.metrics?.hits;
+  const tbSample  = card.sample?.metrics?.totalBases;
+  const bits = [];
+  const h5 = shortSeries(hitSample?.last5);
+  if (h5) bits.push(`H5: ${h5}`);
+  if (tbSample?.avgLast10 != null) bits.push(`TB10 prom: ${fmt1(tbSample.avgLast10)}`);
+  return bits.join(" · ");
+};
+
+const compactStatcast = (card) => [
+  ["xwOBA", card.statcast?.xwoba, 3, ""],
+  ["xBA", card.statcast?.xba, 3, ""],
+  ["Barrel", card.statcast?.barrelPct, 1, "%"],
+  ["HH", card.statcast?.hardHitPct, 1, "%"],
+  ["EV", card.statcast?.exitVelo, 1, ""],
+].filter(([, v]) => v != null)
+ .map(([label, v, digits, suffix]) => `${label} ${Number(v).toFixed(digits)}${suffix}`);
 
 export function batterRadarDisplay(radar) {
   if (!radar) return { visible: false };
@@ -114,42 +185,40 @@ export function batterRadarDisplay(radar) {
     teamName: team?.teamName ?? side,
     lineupConfirmed: team?.lineupConfirmed === true,
     cards: (team?.cards ?? []).map(card => {
-      const hitSample = card.sample?.metrics?.hits;
-      const tbSample  = card.sample?.metrics?.totalBases;
-      const notes = BATTER_MARKETS
-        .flatMap(([key]) => card.markets?.[key]?.notes ?? [])
-        .filter(Boolean)
-        .slice(0, 2);
-      const statcast = [
-        ["xwOBA", card.statcast?.xwoba, 3],
-        ["xBA", card.statcast?.xba, 3],
-        ["Barrel%", card.statcast?.barrelPct, 1],
-        ["Hard Hit%", card.statcast?.hardHitPct, 1],
-        ["Exit Velo", card.statcast?.exitVelo, 1],
-      ].filter(([, v]) => v != null)
-       .map(([label, v, digits]) => `${label} ${Number(v).toFixed(digits)}`);
+      const notes = compactNotes(card);
+      const statcast = compactStatcast(card);
+      const score = bestBatterScore(card);
       return {
         name: card.name,
         lineupSlot: card.lineupSlot ?? null,
         label: card.label ?? "Radar",
-        score: bestBatterScore(card),
+        score,
         insufficient: card.insufficient === true,
         chips: BATTER_MARKETS.map(([key, label]) => ({
           key,
           label,
-          status: propStatus(card.markets?.[key]),
+          status: propStatus(key, card.markets?.[key]),
           line: card.markets?.[key]?.line ?? null,
         })),
-        recent: {
-          hitsLast5: shortSeries(hitSample?.last5),
-          hitsValidLast10: hitSample?.validLast10 ?? null,
-          totalBasesLast5: shortSeries(tbSample?.last5),
-          totalBasesAvgLast10: tbSample?.avgLast10 ?? null,
-        },
+        heading: `${card.name}${card.lineupSlot != null ? ` · Slot ${card.lineupSlot}` : ""}${score != null ? ` · ${score}/10` : ""}`,
+        marketLine: BATTER_MARKETS.map(([key, label]) => `${label}: ${propStatus(key, card.markets?.[key])}`).join(" · "),
+        recentLine: compactRecent(card),
         statcast,
+        statcastLine: statcast.join(" · "),
         notes,
       };
     }),
   }));
-  return { visible: true, status: radar.status ?? "OK", teams };
+  const angles = teams
+    .flatMap(team => team.cards
+      .map(card => {
+        const raw = (radar[team.side === "Visitante" ? "away" : "home"]?.cards ?? [])
+          .find(c => c.name === card.name && c.lineupSlot === card.lineupSlot);
+        return batterAngleForCard(raw, team.teamName);
+      })
+      .filter(Boolean))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 4)
+    .map(({ weight, ...angle }) => angle);
+  return { visible: true, status: radar.status ?? "OK", angles, teams };
 }

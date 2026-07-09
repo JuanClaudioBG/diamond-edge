@@ -179,51 +179,43 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
                 {batterRadar.message}
               </div>
             ) : (
-              batterRadar.teams.map(team => (
-                <div key={team.side} style={{ marginBottom: 10 }}>
-                  <div style={{ fontFamily: "var(--fm)", fontSize: 9, letterSpacing: 1, textTransform: "uppercase", color: team.side === "Local" ? "var(--gn)" : "var(--cy)", marginBottom: 5 }}>
-                    {team.side} · {team.teamName}
+              <>
+                {batterRadar.angles?.length > 0 && (
+                  <div style={{ border: "1px solid var(--b1)", borderRadius: 6, padding: "7px 8px", marginBottom: 9, fontFamily: "var(--fm)", fontSize: 10, color: "var(--dm)", lineHeight: 1.55 }}>
+                    <div style={{ color: "var(--tx)", fontWeight: 700, marginBottom: 2 }}>Mejores ángulos</div>
+                    {batterRadar.angles.map((angle, i) => (
+                      <div key={`${angle.teamName}-${angle.name}-${i}`}>
+                        <span style={{ color: "var(--cy)" }}>{angle.teamName}</span>: {angle.name} — {angle.label}
+                      </div>
+                    ))}
                   </div>
-                  {team.cards.length === 0 ? (
-                    <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--mu)", padding: "3px 0 7px" }}>
-                      {team.lineupConfirmed ? "Sin bateadores con muestra suficiente para mostrar." : "Lineup no confirmado — sin jugadores inventados."}
+                )}
+                {batterRadar.teams.map(team => (
+                  <div key={team.side} style={{ marginBottom: 8 }}>
+                    <div style={{ fontFamily: "var(--fm)", fontSize: 9, letterSpacing: 1, textTransform: "uppercase", color: team.side === "Local" ? "var(--gn)" : "var(--cy)", marginBottom: 4 }}>
+                      {team.side} · {team.teamName}
                     </div>
-                  ) : team.cards.map((card, idx) => (
-                    <div key={`${team.side}-${card.name}-${idx}`} style={{ borderTop: idx === 0 ? "none" : "1px solid var(--b1)", padding: idx === 0 ? "0 0 8px" : "8px 0", fontFamily: "var(--fm)", fontSize: 10, color: "var(--dm)", lineHeight: 1.55 }}>
-                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                    {team.cards.length === 0 ? (
+                      <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--mu)", padding: "2px 0 6px" }}>
+                        {team.lineupConfirmed ? "Sin bateadores con muestra suficiente para mostrar." : "Lineup no confirmado — sin jugadores inventados."}
+                      </div>
+                    ) : team.cards.map((card, idx) => (
+                      <div key={`${team.side}-${card.name}-${idx}`} style={{ borderTop: idx === 0 ? "none" : "1px solid var(--b1)", padding: idx === 0 ? "0 0 6px" : "6px 0", fontFamily: "var(--fm)", fontSize: 10, color: "var(--dm)", lineHeight: 1.45 }}>
                         <div>
-                          <span style={{ color: "var(--tx)", fontWeight: 700 }}>{card.name}</span>
-                          {card.lineupSlot != null && <span style={{ color: "var(--mu)" }}> · Slot {card.lineupSlot}</span>}
+                          <span style={{ color: "var(--tx)", fontWeight: 700 }}>{card.heading}</span>
+                          <span style={{ color: card.insufficient ? "var(--au)" : "var(--cy)" }}> · {card.label}</span>
                         </div>
-                        <span style={{ color: card.insufficient ? "var(--au)" : "var(--cy)" }}>
-                          {card.label}{card.score != null ? ` · ${card.score}/10` : ""}
-                        </span>
+                        <div style={{ color: "var(--mu)" }}>{card.marketLine}</div>
+                        {card.recentLine && <div><span style={{ color: "var(--cy)" }}>{card.recentLine}</span></div>}
+                        {card.statcastLine && <div style={{ color: "var(--mu)" }}>{card.statcastLine}</div>}
+                        {card.notes.length > 0 && (
+                          <div style={{ color: "var(--au)", fontSize: 9 }}>{card.notes.join(" · ")}</div>
+                        )}
                       </div>
-                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
-                        {card.chips.map(chip => (
-                          <span key={chip.key} style={{ border: "1px solid var(--b1)", borderRadius: 6, padding: "2px 5px", color: "var(--mu)" }}>
-                            <span style={{ color: "var(--tx)" }}>{chip.label}</span> · {chip.status}
-                          </span>
-                        ))}
-                      </div>
-                      {(card.recent.hitsLast5 || card.recent.totalBasesLast5) && (
-                        <div style={{ marginTop: 5 }}>
-                          {card.recent.hitsLast5 && <>H últimos 5: <span style={{ color: "var(--cy)" }}>{card.recent.hitsLast5}</span></>}
-                          {card.recent.hitsValidLast10 != null && <> · H válidos 10: {card.recent.hitsValidLast10}/10</>}
-                          {card.recent.totalBasesLast5 && <> · TB últimos 5: <span style={{ color: "var(--cy)" }}>{card.recent.totalBasesLast5}</span></>}
-                          {card.recent.totalBasesAvgLast10 != null && <> · TB prom 10: {card.recent.totalBasesAvgLast10}</>}
-                        </div>
-                      )}
-                      {card.statcast.length > 0 && (
-                        <div style={{ color: "var(--mu)" }}>Statcast: {card.statcast.join(" · ")}</div>
-                      )}
-                      {card.notes.length > 0 && (
-                        <div style={{ color: "var(--au)", fontSize: 9 }}>{card.notes.join(" · ")}</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ))
+                    ))}
+                  </div>
+                ))}
+              </>
             )}
             {batterRadar.status !== "LINEUP_NO_CONFIRMADO" && (
               <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginTop: 3 }}>

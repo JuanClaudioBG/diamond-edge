@@ -101,25 +101,50 @@ test("batterRadarDisplay muestra LINEUP_NO_CONFIRMADO sin inventar jugadores", (
   assert.deepEqual(d.teams, []);
 });
 
-test("batterRadarDisplay muestra cards OK con chips PROP PARA REVISAR y sin VALOR", () => {
+test("batterRadarDisplay muestra cards OK compactas con ángulos y sin VALOR", () => {
   const d = batterRadarDisplay({
     status: "OK",
     away: { teamName: "Yankees", lineupConfirmed: true, cards: [batterCard] },
     home: { teamName: "Mets", lineupConfirmed: true, cards: [] },
   });
   assert.equal(d.visible, true);
+  assert.equal(d.angles.length, 1);
+  assert.deepEqual(d.angles[0], { teamName: "Yankees", name: "Aaron Judge", label: "Hits/TB" });
   assert.equal(d.teams[0].side, "Visitante");
   assert.equal(d.teams[0].cards[0].name, "Aaron Judge");
   assert.equal(d.teams[0].cards[0].score, 7);
   assert.deepEqual(d.teams[0].cards[0].chips.map(c => c.status), [
-    "PROP PARA REVISAR", "PROP PARA REVISAR", "PROP PARA REVISAR", "PROP PARA REVISAR",
+    "PROP PARA REVISAR", "PROP PARA REVISAR", "SOLO ÁNGULO", "BAJA CONFIANZA",
   ]);
-  assert.match(d.teams[0].cards[0].recent.hitsLast5, /1 · 2 · 1/);
+  assert.match(d.teams[0].cards[0].marketLine, /Hits: PROP PARA REVISAR/);
+  assert.match(d.teams[0].cards[0].marketLine, /HR: SOLO ÁNGULO/);
+  assert.match(d.teams[0].cards[0].marketLine, /RBI: BAJA CONFIANZA/);
+  assert.match(d.teams[0].cards[0].recentLine, /H5: 1-2-1-0-2/);
+  assert.match(d.teams[0].cards[0].recentLine, /TB10 prom: 2\.1/);
   assert.ok(d.teams[0].cards[0].statcast.some(s => /xwOBA 0\.381/.test(s)));
-  assert.ok(d.teams[0].cards[0].statcast.some(s => /Exit Velo 91\.8/.test(s)));
+  assert.ok(d.teams[0].cards[0].statcast.some(s => /EV 91\.8/.test(s)));
   const json = JSON.stringify(d);
   assert.ok(!/VALOR\s+(ALTO|MEDIO|BAJO)/i.test(json));
   assert.ok(!/cuota/i.test(json));
+});
+
+test("batterRadarDisplay limita Mejores ángulos a cuatro cards", () => {
+  const cards = Array.from({ length: 6 }, (_, i) => ({
+    ...batterCard,
+    name: `Batter ${i + 1}`,
+    markets: {
+      ...batterCard.markets,
+      hits: { ...batterCard.markets.hits, score: 7 - (i * 0.2) },
+      totalBases: { ...batterCard.markets.totalBases, score: 6 - (i * 0.2) },
+    },
+  }));
+  const d = batterRadarDisplay({
+    status: "OK",
+    away: { teamName: "MIL", lineupConfirmed: true, cards },
+    home: { teamName: "STL", lineupConfirmed: true, cards: [] },
+  });
+  assert.equal(d.angles.length, 4);
+  assert.equal(d.angles[0].name, "Batter 1");
 });
 
 test("AnalysisTab incluye sección Batter Radar compacta sin botón PARLAY dentro del bloque", () => {
@@ -129,7 +154,11 @@ test("AnalysisTab incluye sección Batter Radar compacta sin botón PARLAY dentr
   assert.ok(start > -1 && end > start, "bloque Batter Radar existe antes del Total");
   const block = src.slice(start, end);
   assert.match(block, /RADAR DE BATEADORES/);
+  assert.match(block, /Mejores ángulos/);
   assert.match(block, /PROP PARA REVISAR/);
+  assert.match(block, /marketLine/);
+  assert.match(block, /recentLine/);
+  assert.match(block, /statcastLine/);
   assert.ok(!/onAddPick|className="padd"|\+ PARLAY/.test(block), "Batter Radar no ofrece añadir al parlay");
   assert.ok(!/VALOR\s+(ALTO|MEDIO|BAJO)/i.test(block), "Batter Radar no usa badges financieros");
 });
