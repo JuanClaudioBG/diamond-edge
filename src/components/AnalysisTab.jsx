@@ -1,5 +1,5 @@
 import { advCls, advLbl } from "../utils";
-import { totalDisplay, isStarterKPropCoveredByRadar } from "../analysis-display";
+import { totalDisplay, isStarterKPropCoveredByRadar, pickBadge } from "../analysis-display";
 
 export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick }) {
   if (analyzing) return <div className="ld"><span className="sp" />ANALIZANDO CON IA…</div>;
@@ -205,23 +205,29 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
         const cubiertos = revisarTodos.filter(pk => isStarterKPropCoveredByRadar(pk, analysis.radar));
         const revisar   = revisarTodos.filter(pk => !cubiertos.includes(pk));
         const fmtCuota  = (c) => (c > 0 ? `+${c}` : `${c}`);
-        const chip      = (v) => (v === "SIN CUOTA" || v === "SIN VERIFICAR" || v === "SIN VALOR" || String(v).startsWith("SEÑAL")) ? v : `VALOR ${v}`;
-        const pvCls     = (v) => v === "SEÑAL ALTA" ? "ALTO" : v === "SEÑAL MEDIA" ? "MEDIO" : (v === "SEÑAL BAJA" || v === "SIN VALOR") ? "BAJO" : v;
-        const Pick = ({ pk }) => (
-          <div className="pick">
-            <div className="pick-top">
-              <span className="pick-tp">{pk.tipo}</span>
-              <span className={`pv ${pvCls(pk.valor)}`}>{chip(pk.valor)}</span>
+        const Pick = ({ pk }) => {
+          const badge = pickBadge(pk);
+          return (
+            <div className="pick" style={badge.activo ? undefined : { opacity: 0.55 }}>
+              <div className="pick-top">
+                <span className="pick-tp">{pk.tipo}</span>
+                <span className={`pv ${badge.clase}`}>{badge.texto}</span>
+              </div>
+              <div className="pick-tx">
+                {pk.pick}
+                {pk.cuotaReal != null && <span style={{ color: "var(--cy)", fontFamily: "var(--fm)", fontSize: 12 }}> · cuota real {fmtCuota(pk.cuotaReal)}</span>}
+                {pk.verificado === false && pk.tipo !== "Prop para revisar" && <span style={{ color: "var(--au)", fontFamily: "var(--fm)", fontSize: 10 }}> · cuota no disponible</span>}
+              </div>
+              {!badge.activo && (
+                <div style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", marginBottom: 4 }}>
+                  El pick original contradijo la dirección del servidor — se conserva solo como auditoría.
+                </div>
+              )}
+              <div className="pick-rs">{pk.razon}</div>
+              {badge.activo && <button className="padd" onClick={() => onAddPick(pk)}>+ PARLAY</button>}
             </div>
-            <div className="pick-tx">
-              {pk.pick}
-              {pk.cuotaReal != null && <span style={{ color: "var(--cy)", fontFamily: "var(--fm)", fontSize: 12 }}> · cuota real {fmtCuota(pk.cuotaReal)}</span>}
-              {pk.verificado === false && pk.tipo !== "Prop para revisar" && <span style={{ color: "var(--au)", fontFamily: "var(--fm)", fontSize: 10 }}> · cuota no disponible</span>}
-            </div>
-            <div className="pick-rs">{pk.razon}</div>
-            <button className="padd" onClick={() => onAddPick(pk)}>+ PARLAY</button>
-          </div>
-        );
+          );
+        };
         return (
           <>
             <div className="acard">

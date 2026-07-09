@@ -186,10 +186,76 @@ export function enforceMlValueConsistency(picks, mercado, homeName, awayName) {
 }
 
 /**
+ * Ninguna narrativa final conserva "implícita/implícito": el LLM escribe la
+ * implícita BRUTA (con vig) junto a la probabilidad sin vig oficial y las
+ * dos se confunden. Si el porcentaje coincide (±0.2 pp) con probMercadoLocal
+ * o probMercadoVisitante del snapshot, se re-etiqueta como lo que ES:
+ * "probabilidad de mercado sin vig X%". Si NO coincide (implícita bruta
+ * genuina), el número se elimina y queda la frase genérica "probabilidad de
+ * mercado" — jamás se reinterpreta un número del LLM como sin vig.
+ * mercado null → nada coincide → solo limpieza genérica. Puro sobre texto.
+ */
+const IMPLIED_TOLERANCE_PP = 0.2;
+
+export function relabelImpliedNoVig(text, mercado) {
+  let out = String(text ?? "");
+  const noVig = [mercado?.probMercadoLocal, mercado?.probMercadoVisitante]
+    .filter(v => Number.isFinite(v));
+  const matchesNoVig = (numStr) => {
+    const n = parseFloat(String(numStr).replace(",", "."));
+    return Number.isFinite(n) && noVig.some(v => Math.abs(v - n) <= IMPLIED_TOLERANCE_PP);
+  };
+  const relabeled = (num) => matchesNoVig(num)
+    ? `probabilidad de mercado sin vig ${num}%`
+    : "probabilidad de mercado";
+  /* "probabilidad implícita [de] [~]54.7%" — palabra primero */
+  out = out.replace(
+    /(?:la\s+)?prob(?:abilidad)?\.?\s+impl[ií]cit[oa]\s+(?:de\s+)?~?\s*(\d+(?:[.,]\d+)?)\s*%/gi,
+    (m, num) => relabeled(num)
+  );
+  /* "[~]54.7% implícito" — número primero */
+  out = out.replace(
+    /(?:~\s*)?(\d+(?:[.,]\d+)?)\s*%\s+impl[ií]cit[oa]s?/gi,
+    (m, num) => relabeled(num)
+  );
+  /* Red final: cualquier "implícita/o" restante (sin número adyacente)
+     se neutraliza — la palabra no sobrevive en la narrativa final */
+  out = out
+    .replace(/\bprob(?:abilidad)?\.?\s+impl[ií]cit[oa]s?\b/gi, "probabilidad de mercado")
+    .replace(/\bimpl[ií]cit[oa]s?\b/gi, "de mercado");
+  return out;
+}
+
+/**
+ * Aplica relabelImpliedNoVig a TODOS los campos narrativos del análisis.
+ * Vive separado de sanitizeNarratives porque necesita el objeto mercado,
+ * que se calcula DESPUÉS. Muta el objeto recibido y lo devuelve; los
+ * campos no-string quedan intactos.
+ */
+export function relabelImpliedNoVigNarratives(analysis, mercado) {
+  if (!analysis || typeof analysis !== "object") return analysis;
+  const clean = (t) => typeof t === "string" ? relabelImpliedNoVig(t, mercado) : t;
+  analysis.resumen             = clean(analysis.resumen);
+  analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
+  analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
+  if (Array.isArray(analysis.factoresClave)) {
+    analysis.factoresClave = analysis.factoresClave.map(clean);
+  }
+  if (analysis.prediccion)    analysis.prediccion.razon    = clean(analysis.prediccion.razon);
+  if (analysis.totalCarreras) analysis.totalCarreras.razon = clean(analysis.totalCarreras.razon);
+  if (Array.isArray(analysis.picks)) {
+    for (const p of analysis.picks) if (p) p.razon = clean(p.razon);
+  }
+  return analysis;
+}
+
+/**
  * La dirección del total la dictan los números del servidor, no la prosa:
  *   proyectado − lineaMercado ≥ +0.3 → OVER · ≤ −0.3 → UNDER ·
  *   |gap| < 0.3 → senalClara:false (sin dirección fuerte fabricada).
- * Un pick de Total que contradiga la dirección se degrada a SEÑAL BAJA.
+ * Un pick de Total que contradiga la dirección deja de ser recomendación
+ * activa: SEÑAL NO OFICIAL + noOficial:true, conservando pick, cuotaReal,
+ * verificado y razón como auditoría.
  * Puro: devuelve { totalCarreras, picks } nuevos; sin números no toca nada.
  */
 export const TOTAL_DIRECTION_GAP = 0.3;
@@ -222,7 +288,8 @@ export function enforceTotalDirection(totalCarreras, picks) {
       if (side === dir) return pick;                                // coherente: intacto
       return {
         ...pick,
-        valor: "SEÑAL BAJA",
+        valor: "SEÑAL NO OFICIAL",
+        noOficial: true,
         razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
       };
     });

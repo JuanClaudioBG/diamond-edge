@@ -30,6 +30,28 @@ export function totalDisplay(t) {
   return { proyeccion, lineaReal, senal };
 }
 
+/**
+ * Badge de un pick: texto, clase visual y si es recomendación ACTIVA.
+ * Un pick noOficial (Total contradictorio con la dirección del servidor)
+ * no se presenta como recomendación: badge gris "SEÑAL NO OFICIAL",
+ * activo:false — la card lo atenúa, explica la contradicción y no ofrece
+ * + PARLAY. La línea y la razón se conservan como auditoría.
+ */
+export function pickBadge(pk) {
+  if (!pk) return { texto: null, clase: null, activo: false };
+  if (pk.noOficial === true || pk.valor === "SEÑAL NO OFICIAL") {
+    return { texto: "SEÑAL NO OFICIAL", clase: "NOOF", activo: false };
+  }
+  const v = pk.valor;
+  const texto = (v === "SIN CUOTA" || v === "SIN VERIFICAR" || v === "SIN VALOR" || String(v).startsWith("SEÑAL"))
+    ? v : `VALOR ${v}`;
+  const clase = v === "SEÑAL ALTA" ? "ALTO"
+    : v === "SEÑAL MEDIA" ? "MEDIO"
+    : (v === "SEÑAL BAJA" || v === "SIN VALOR") ? "BAJO"
+    : v;
+  return { texto, clase, activo: true };
+}
+
 const K_PROP_PATTERN = /(strikeouts?|ponches?|\bk\b)/i;
 
 /**

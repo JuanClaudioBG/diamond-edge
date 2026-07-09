@@ -118,6 +118,7 @@ html,body,#root{height:100%;background:var(--bg);color:var(--tx);font-family:var
 .pv.ALTO{background:rgba(0,230,118,.12);color:var(--gn)}
 .pv.MEDIO{background:rgba(255,215,64,.12);color:var(--au)}
 .pv.BAJO{background:rgba(255,61,90,.1);color:var(--rd)}
+.pv.NOOF{background:rgba(160,160,160,.12);color:var(--mu)}
 .pick-tx{font-size:14px;font-weight:600;color:var(--tx);margin-bottom:3px}
 .pick-rs{font-size:11px;color:var(--dm);line-height:1.4;padding-bottom:22px}
 .padd{position:absolute;right:10px;bottom:8px;padding:3px 9px;background:transparent;border:1px solid var(--au);color:var(--au);font-family:var(--fm);font-size:8px;letter-spacing:1px;cursor:pointer;border-radius:2px;transition:all .15s}

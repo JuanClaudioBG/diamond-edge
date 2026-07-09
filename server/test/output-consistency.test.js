@@ -101,18 +101,22 @@ test(`|gap| < ${TOTAL_DIRECTION_GAP} → senalClara:false, sin dirección fabric
   assert.deepEqual(same, input);
 });
 
-/* ═══ 8. Pick Total contradictorio → SEÑAL BAJA; coherente → intacto ═══ */
-test("pick Total que contradice la dirección del servidor → SEÑAL BAJA con nota; el coherente queda intacto", () => {
-  const contradictorio = { tipo: "Total", pick: "Over 10", valor: "SEÑAL MEDIA", razon: "y", cuotaReal: -110 };
+/* ═══ 8. Pick Total contradictorio → SEÑAL NO OFICIAL; coherente → intacto ═══ */
+test("pick Total que contradice la dirección del servidor → SEÑAL NO OFICIAL + noOficial, auditoría conservada; el coherente queda intacto", () => {
+  const contradictorio = { tipo: "Total", pick: "Over 10", valor: "SEÑAL MEDIA", razon: "y", cuotaReal: -110, verificado: true };
   const coherente      = { tipo: "Total", pick: "Under 10", valor: "SEÑAL MEDIA", razon: "z", cuotaReal: -114 };
   const { picks } = enforceTotalDirection(
     { proyectado: "9.2", lineaMercado: 10, recomendacion: "UNDER", razon: "x" },
     [contradictorio, coherente]
   );
-  assert.equal(picks[0].valor, "SEÑAL BAJA");
+  assert.equal(picks[0].valor, "SEÑAL NO OFICIAL");
+  assert.equal(picks[0].noOficial, true);
   assert.match(picks[0].razon, /⚠️ Pick inconsistente con la dirección del servidor \(proyección 9\.2 vs línea 10 → UNDER\)\./);
+  assert.equal(picks[0].pick, "Over 10", "el pick original se conserva como auditoría");
   assert.equal(picks[0].cuotaReal, -110, "cuota verificada conservada");
-  assert.deepEqual(picks[1], coherente, "el pick coherente no se toca");
+  assert.equal(picks[0].verificado, true, "verificado conservado");
+  assert.match(picks[0].razon, /y$/, "razón original conservada tras la nota");
+  assert.deepEqual(picks[1], coherente, "el pick coherente no se toca ni gana noOficial");
 });
 
 /* ═══ 9-10. Comparaciones numéricas en narrativa ═══ */
@@ -183,7 +187,8 @@ test("pipeline: ML degradado tras mercado + dirección del total corregida, enca
   analysis.picks = enforceMlValueConsistency(analysis.picks, MERCADO_DODGERS, HOME, AWAY);
   assert.equal(analysis.totalCarreras.recomendacion, "UNDER");
   assert.equal(analysis.picks[0].valor, "SIN VALOR", "ML con EV −2% degradado en el pipeline");
-  assert.equal(analysis.picks[1].valor, "SEÑAL BAJA", "Total contradictorio degradado en el pipeline");
+  assert.equal(analysis.picks[1].valor, "SEÑAL NO OFICIAL", "Total contradictorio degradado en el pipeline");
+  assert.equal(analysis.picks[1].noOficial, true);
 });
 
 test("sanitizeNarratives ahora corrige comparaciones métricas en razones y factores", () => {
@@ -227,4 +232,82 @@ test("variante invertida '(46.3% implícito)' (vista en analysisId 40) → tambi
   sanitizeNarratives(analysis);
   assert.ok(!/impl[ií]cit/i.test(analysis.prediccion.razon), `sobrevivió: ${analysis.prediccion.razon}`);
   assert.match(analysis.prediccion.razon, /por debajo del mercado, sin divergencia suficiente\./);
+});
+
+/* ═══ Pulido visual: Total contradictorio no es pick activo + relabel de implícita ═══ */
+import { relabelImpliedNoVig, relabelImpliedNoVigNarratives } from "../verify-picks.js";
+import { pickBadge } from "../../src/analysis-display.js";
+
+const MERCADO_547 = { probMercadoLocal: 54.7, probMercadoVisitante: 45.3, probModeloLocal: 56 };
+
+test("pickBadge: pick noOficial → activo:false, clase neutra NOOF, texto SEÑAL NO OFICIAL", () => {
+  const b = pickBadge({ tipo: "Total", pick: "Under 7", valor: "SEÑAL NO OFICIAL", noOficial: true });
+  assert.equal(b.activo, false);
+  assert.equal(b.clase, "NOOF");
+  assert.equal(b.texto, "SEÑAL NO OFICIAL");
+});
+
+test("pickBadge: picks normales siguen activos con su clase de siempre", () => {
+  assert.deepEqual(pickBadge({ valor: "MEDIO" }), { texto: "VALOR MEDIO", clase: "MEDIO", activo: true });
+  assert.deepEqual(pickBadge({ valor: "SEÑAL ALTA" }), { texto: "SEÑAL ALTA", clase: "ALTO", activo: true });
+  assert.deepEqual(pickBadge({ valor: "SIN VALOR" }), { texto: "SIN VALOR", clase: "BAJO", activo: true });
+  assert.deepEqual(pickBadge({ valor: "SIN CUOTA" }), { texto: "SIN CUOTA", clase: "SIN CUOTA", activo: true });
+  assert.equal(pickBadge(null).activo, false, "pick null jamás es activo");
+});
+
+test("relabelImpliedNoVig: 'probabilidad implícita 54.7%' que coincide con sin vig → re-etiquetada", () => {
+  const out = relabelImpliedNoVig("El mercado asigna probabilidad implícita 54.7% al local.", MERCADO_547);
+  assert.equal(out, "El mercado asigna probabilidad de mercado sin vig 54.7% al local.");
+});
+
+test("relabelImpliedNoVig: '54.7% implícito' (número primero) y coma decimal '45,3%' → corregidos", () => {
+  const invertido = relabelImpliedNoVig("con 54.7% implícito a favor.", MERCADO_547);
+  assert.equal(invertido, "con probabilidad de mercado sin vig 54.7% a favor.");
+  const coma = relabelImpliedNoVig("prob. implícita de 45,3% para el visitante.", MERCADO_547);
+  assert.equal(coma, "probabilidad de mercado sin vig 45,3% para el visitante.");
+});
+
+test("relabelImpliedNoVig: número que NO coincide con sin vig → no conserva 'implícita' ni el número etiquetado", () => {
+  const out = relabelImpliedNoVig("El mercado pone probabilidad implícita 55.7% al favorito.", MERCADO_547);
+  assert.ok(!/impl[ií]cit/i.test(out), `sobrevivió: ${out}`);
+  assert.ok(!/55\.7/.test(out), "el número bruto no queda re-etiquetado como sin vig");
+  assert.match(out, /probabilidad de mercado/);
+});
+
+test("relabelImpliedNoVig: mercado null → no crash y limpieza genérica sin 'implícita'", () => {
+  const out = relabelImpliedNoVig("prob implícita ~55.7% y una ventaja implícita del local.", null);
+  assert.ok(!/impl[ií]cit/i.test(out), `sobrevivió: ${out}`);
+  assert.equal(relabelImpliedNoVig(null, null), "", "texto null no explota");
+  assert.equal(relabelImpliedNoVig("sin menciones raras.", null), "sin menciones raras.", "texto limpio intacto");
+});
+
+test("relabelImpliedNoVigNarratives: recorre todos los campos narrativos sin tocar no-strings", () => {
+  const analysis = {
+    resumen: "probabilidad implícita 54.7% domina.",
+    ventajaPitcheoTexto: "el 45.3% implícito del visitante.",
+    ventajaOfensivaTexto: null,
+    factoresClave: ["prob implícita 54.7% del local", 42],
+    prediccion: { razon: "prob. implícita de 54.7%." },
+    totalCarreras: { razon: "sin cambios.", lineaMercado: 7 },
+    picks: [{ razon: "implícita 54.7% de nuevo", cuotaReal: -142 }],
+  };
+  relabelImpliedNoVigNarratives(analysis, MERCADO_547);
+  const narrativa = [analysis.resumen, analysis.ventajaPitcheoTexto, analysis.factoresClave[0],
+    analysis.prediccion.razon, analysis.picks[0].razon].join(" | ");
+  assert.ok(!/impl[ií]cit/i.test(narrativa), `sobrevivió: ${narrativa}`);
+  assert.match(analysis.resumen, /sin vig 54\.7%/);
+  assert.match(analysis.ventajaPitcheoTexto, /sin vig 45\.3%/);
+  assert.equal(analysis.ventajaOfensivaTexto, null, "no-string intacto");
+  assert.equal(analysis.factoresClave[1], 42, "factor no-string intacto");
+  assert.equal(analysis.totalCarreras.lineaMercado, 7, "campos estructurados intactos");
+  assert.equal(analysis.picks[0].cuotaReal, -142);
+  assert.equal(relabelImpliedNoVigNarratives(null, MERCADO_547), null, "analysis null no explota");
+});
+
+test("orden de integración: relabelImpliedNoVigNarratives corre DESPUÉS del cálculo de mercado", () => {
+  const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+  const iMercado = src.indexOf("analysis.mercado = mercado");
+  const iRelabel = src.indexOf("relabelImpliedNoVigNarratives(analysis, mercado)");
+  assert.ok(iMercado > -1 && iRelabel > -1, "ambas llamadas existen");
+  assert.ok(iMercado < iRelabel, "el relabel necesita el mercado ya calculado");
 });

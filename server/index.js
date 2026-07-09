@@ -8,7 +8,7 @@ import { getAllPicks, insertPick, updateResultado, insertAnalysisLog, getAllAnal
 import { buildEvaluation } from "./evaluation.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
-import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, enforceMlValueConsistency, enforceTotalDirection } from "./verify-picks.js";
+import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, enforceMlValueConsistency, enforceTotalDirection, relabelImpliedNoVigNarratives } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage } from "./batter-profiles.js";
 
@@ -818,7 +818,8 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
        no puede citar otra línea; null sin crash cuando no hay totals. */
     analysis.totalCarreras = attachMarketTotalLine(analysis.totalCarreras, oddsGame);
     /* La dirección del total la dictan proyectado vs lineaMercado (recién
-       inyectada); un pick de Total contradictorio se degrada a SEÑAL BAJA */
+       inyectada); un pick de Total contradictorio deja de ser recomendación
+       activa (SEÑAL NO OFICIAL, conservado como auditoría) */
     const dirFix = enforceTotalDirection(analysis.totalCarreras, analysis.picks);
     analysis.totalCarreras = dirFix.totalCarreras;
     analysis.picks = dirFix.picks;
@@ -859,6 +860,10 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     /* ML con EV del servidor ≤ 0 jamás sale como pick de valor — requiere
        mercado ya calculado, por eso vive AQUÍ y no dentro de verifyPicks */
     analysis.picks = enforceMlValueConsistency(analysis.picks, mercado, h.team.name, a.team.name);
+    /* Ninguna narrativa final conserva "implícita": coincide con la sin vig
+       del snapshot → se re-etiqueta; no coincide → frase genérica. También
+       requiere mercado ya calculado, por eso vive aquí y no en sanitizeNarratives */
+    relabelImpliedNoVigNarratives(analysis, mercado);
     analysis.bullpen = (hFatigue || aFatigue)
       ? { home: hFatigue, away: aFatigue }
       : null;
