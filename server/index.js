@@ -8,7 +8,7 @@ import { getAllPicks, insertPick, updateResultado, insertAnalysisLog, getAllAnal
 import { buildEvaluation } from "./evaluation.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
-import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine } from "./verify-picks.js";
+import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, enforceMlValueConsistency, enforceTotalDirection } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage } from "./batter-profiles.js";
 
@@ -25,7 +25,9 @@ dotenv.config();
    .5 = Statcast ofensivo real (player_id→currentTeam, ponderado por PA),
    reglas explícitas de LOB%, dirección ERA vs xERA/FIP, coherencia narrativa
    con mercado oficial, total proyectado separado de línea real, bloqueo de
-   rankings no verificados, props de K de abridores remitidos al Radar. */
+   rankings no verificados, props de K de abridores remitidos al Radar.
+   Enforcement de consistencia de salida: ML sin valor con EV≤0, dirección
+   del total y comparaciones métricas — misma .5 (solo post-proceso). */
 const LOGIC_VERSION = "2026-07-02.5";
 const MODEL         = "claude-sonnet-4-6";
 
@@ -815,7 +817,13 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     /* Línea de mercado autoritaria (totals.point del snapshot) — la narrativa
        no puede citar otra línea; null sin crash cuando no hay totals. */
     analysis.totalCarreras = attachMarketTotalLine(analysis.totalCarreras, oddsGame);
-    /* Rankings no verificados y hype financiero fuera de TODA la narrativa */
+    /* La dirección del total la dictan proyectado vs lineaMercado (recién
+       inyectada); un pick de Total contradictorio se degrada a SEÑAL BAJA */
+    const dirFix = enforceTotalDirection(analysis.totalCarreras, analysis.picks);
+    analysis.totalCarreras = dirFix.totalCarreras;
+    analysis.picks = dirFix.picks;
+    /* Rankings no verificados, hype financiero y comparaciones métricas
+       contradictorias fuera de TODA la narrativa */
     sanitizeNarratives(analysis);
 
     /* ── EV calculado en código (no por el LLM) ─────────────────── */
@@ -848,6 +856,9 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       };
     }
     analysis.mercado = mercado;
+    /* ML con EV del servidor ≤ 0 jamás sale como pick de valor — requiere
+       mercado ya calculado, por eso vive AQUÍ y no dentro de verifyPicks */
+    analysis.picks = enforceMlValueConsistency(analysis.picks, mercado, h.team.name, a.team.name);
     analysis.bullpen = (hFatigue || aFatigue)
       ? { home: hFatigue, away: aFatigue }
       : null;

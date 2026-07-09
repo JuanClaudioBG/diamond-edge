@@ -19,8 +19,13 @@ export function totalDisplay(t) {
   if (!t) return { proyeccion: null, lineaReal: null, senal: null };
   const proyeccion = t.proyectado ?? t.estimado ?? null;
   const lineaReal  = t.lineaMercado ?? null;
-  const senal      = t.recomendacion && lineaReal != null
-    ? `${t.recomendacion} ${lineaReal}`
+  /* Proyección demasiado cerca de la línea: el servidor marca senalClara=false
+     y no se fabrica dirección fuerte */
+  if (t.senalClara === false) {
+    return { proyeccion, lineaReal, senal: "SEÑAL NO CLARA" };
+  }
+  const senal = t.recomendacion && lineaReal != null
+    ? `${t.recomendacion} ${lineaReal}`   // recomendacion ya viene corregida por el servidor
     : null;
   return { proyeccion, lineaReal, senal };
 }

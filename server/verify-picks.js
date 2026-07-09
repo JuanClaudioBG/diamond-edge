@@ -111,7 +111,9 @@ export function stripMismatchedOdds(text, allowedPrice) {
  */
 export function sanitizeNarratives(analysis) {
   if (!analysis || typeof analysis !== "object") return analysis;
-  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(t));
+  /* fixMoneylineWording también aquí: la implícita bruta entre paréntesis
+     confunde junto a la probabilidad sin vig oficial, en CUALQUIER campo */
+  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(fixMetricComparisons(fixMoneylineWording(t))));
   if (typeof analysis.resumen === "string") analysis.resumen = clean(analysis.resumen);
   if (typeof analysis.ventajaPitcheoTexto === "string") analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
   if (typeof analysis.ventajaOfensivaTexto === "string") analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
@@ -149,6 +151,125 @@ export function attachMarketTotalLine(totalCarreras, oddsGame) {
   return t;
 }
 
+/* ─── Enforcement de consistencia de salida (misma .5) ────────────
+   El LLM puede emitir badges/direcciones/verbos que contradicen los
+   números del propio servidor. Estas funciones PURAS hacen cumplir los
+   contratos ya existentes — no recalculan probabilidades ni EV: solo
+   LEEN el objeto mercado ya calculado y los campos ya inyectados. */
+
+/**
+ * Moneyline con EV del servidor ≤ 0 jamás puede presentarse como pick de
+ * valor (VALOR ALTO/MEDIO/BAJO). Se degrada a "SIN VALOR" conservando
+ * cuotaReal, verificado y el objeto mercado intactos.
+ * EV por lado desde los campos existentes de mercado (en puntos %):
+ *   local:     probModeloLocal − probMercadoLocal
+ *   visitante: (100 − probModeloLocal) − probMercadoVisitante
+ */
+export function enforceMlValueConsistency(picks, mercado, homeName, awayName) {
+  if (!Array.isArray(picks) || !mercado || mercado.probModeloLocal == null) return picks;
+  return picks.map(pick => {
+    if (!norm(pick?.tipo).startsWith("moneyline")) return pick;
+    const team = teamInText(pick.pick, homeName, awayName);
+    if (team == null) return pick;                                  // lado no mapeable: no tocar
+    const side = team === homeName ? "home" : "away";
+    const ev = side === "home"
+      ? mercado.probModeloLocal - mercado.probMercadoLocal
+      : (100 - mercado.probModeloLocal) - mercado.probMercadoVisitante;
+    if (!Number.isFinite(ev) || ev > 0) return pick;                // EV positivo: badge intacto en esta fase
+    const evTxt = `${ev > 0 ? "+" : ""}${(Math.round(ev * 10) / 10).toFixed(1)}`;
+    return {
+      ...pick,
+      valor: "SIN VALOR",
+      razon: `EV del servidor: ${evTxt}% — la cuota paga menos que la probabilidad estimada; no es pick de valor. ${pick.razon ?? ""}`.trim(),
+    };
+  });
+}
+
+/**
+ * La dirección del total la dictan los números del servidor, no la prosa:
+ *   proyectado − lineaMercado ≥ +0.3 → OVER · ≤ −0.3 → UNDER ·
+ *   |gap| < 0.3 → senalClara:false (sin dirección fuerte fabricada).
+ * Un pick de Total que contradiga la dirección se degrada a SEÑAL BAJA.
+ * Puro: devuelve { totalCarreras, picks } nuevos; sin números no toca nada.
+ */
+export const TOTAL_DIRECTION_GAP = 0.3;
+
+export function enforceTotalDirection(totalCarreras, picks) {
+  const proy  = parseFloat(totalCarreras?.proyectado ?? totalCarreras?.estimado);
+  const linea = totalCarreras?.lineaMercado != null ? Number(totalCarreras.lineaMercado) : NaN;
+  if (!Number.isFinite(proy) || !Number.isFinite(linea)) {
+    return { totalCarreras, picks };
+  }
+  const gap = proy - linea;
+  let t = { ...totalCarreras };
+  let dir = null;
+  if (Math.abs(gap) < TOTAL_DIRECTION_GAP) {
+    t.senalClara = false;                                           // muy cerca: sin dirección fuerte
+  } else {
+    dir = gap > 0 ? "OVER" : "UNDER";
+    if (t.recomendacion !== dir) {
+      t.recomendacion = dir;
+      t.razon = `Dirección corregida por el servidor: proyección ${proy} vs línea ${linea} → ${dir}. ${t.razon ?? ""}`.trim();
+    }
+  }
+  let outPicks = picks;
+  if (dir && Array.isArray(picks)) {
+    outPicks = picks.map(pick => {
+      if (!norm(pick?.tipo).startsWith("total")) return pick;
+      const m = String(pick.pick ?? "").match(/\b(over|under)\b/i);
+      if (!m) return pick;
+      const side = m[1].toUpperCase();
+      if (side === dir) return pick;                                // coherente: intacto
+      return {
+        ...pick,
+        valor: "SEÑAL BAJA",
+        razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
+      };
+    });
+  }
+  return { totalCarreras: t, picks: outPicks };
+}
+
+/**
+ * La narrativa no puede contradecir sus propios números.
+ * Patrones ESTRECHOS (métrica + número + comparador + ERA + número):
+ *  - "xERA 4.78 supera ERA 5.40" (falso: 4.78 < 5.40) → verbo corregido.
+ *  - "FIP mayor que ERA … peores que el proceso" → mapeo semántico corregido
+ *    (mayor = resultados MEJORES que el proceso → posible deterioro).
+ * Métricas sueltas ("xERA 3.10", "K/9 11.2") jamás se tocan.
+ */
+const CMP_ABOVE = /supera(?:\s+(?:a|al|el|su))?|es\s+mayor\s+que|mayor\s+que|por\s+encima\s+de(?:l)?|excede(?:\s+(?:a|al|el|su))?/i;
+
+export function fixMetricComparisons(text) {
+  let out = String(text ?? "");
+
+  /* Comparación numérica explícita metric A <cmp> ERA B */
+  out = out.replace(
+    /\b(xERA|xFIP|FIP)\s+(\d+(?:\.\d+)?)\s+(supera(?:\s+(?:a|al|el|su))?|es\s+mayor\s+que|mayor\s+que|por\s+encima\s+de(?:l)?|excede(?:\s+(?:a|al|el|su))?|es\s+menor\s+que|menor\s+que|(?:está\s+)?por\s+debajo\s+de(?:l)?)\s+(?:el\s+|su\s+)?ERA(?:\s+de)?\s+(\d+(?:\.\d+)?)/gi,
+    (m, metric, aStr, cmp, bStr) => {
+      const a = parseFloat(aStr), b = parseFloat(bStr);
+      const saysAbove = CMP_ABOVE.test(cmp);
+      const isAbove   = a > b;
+      if (saysAbove === isAbove) return m;                          // verbo correcto: intacto
+      return isAbove
+        ? `${metric} ${aStr} está por encima del ERA ${bStr}`
+        : `${metric} ${aStr} está por debajo del ERA ${bStr}`;
+    }
+  );
+
+  /* Mapeo semántico: mayor que ERA = resultados MEJORES que el proceso;
+     menor que ERA = resultados PEORES que el proceso */
+  out = out.replace(
+    /\b(xERA|xFIP|FIP)\s+(mayor|menor)\s+que\s+(?:el\s+|su\s+)?ERA\b([^.!?]*?)\b(peores|mejores)(\s+que\s+el\s+proceso)/gi,
+    (m, metric, cmp, middle, word, tail) => {
+      const correcto = cmp.toLowerCase() === "mayor" ? "mejores" : "peores";
+      return word.toLowerCase() === correcto ? m : `${metric} ${cmp} que ERA${middle}${correcto}${tail}`;
+    }
+  );
+
+  return out;
+}
+
 /* Moneyline: un porcentaje "implícito" escrito por el LLM no puede
    reinterpretarse como probabilidad sin vig (solo coinciden en mercados
    simétricos). El paréntesis se ELIMINA completo — la probabilidad sin vig
@@ -157,7 +278,10 @@ export function attachMarketTotalLine(totalCarreras, oddsGame) {
    Badge VALOR, cuota, probabilidad del modelo y EV quedan intactos. */
 export function fixMoneylineWording(text) {
   return String(text ?? "")
-    .replace(/\s*\((?:probabilidad\s+)?impl[ií]cit[oa]\s+(?:de\s+)?\d+(?:\.\d+)?\s*%\)/gi, "")
+    /* "(implícita ~55.7%)" — palabra primero */
+    .replace(/\s*\((?:prob(?:abilidad)?\.?\s+)?impl[ií]cit[oa]\s+~?\s*(?:de\s+)?~?\s*\d+(?:[.,]\d+)?\s*%\)/gi, "")
+    /* "(46.3% implícito)" — número primero */
+    .replace(/\s*\(\s*~?\d+(?:[.,]\d+)?\s*%\s+impl[ií]cit[oa]s?\s*\)/gi, "")
     .replace(/\b([Aa]) precio\b/g, "$1 cuota");
 }
 

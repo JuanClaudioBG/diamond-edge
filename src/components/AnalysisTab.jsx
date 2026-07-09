@@ -205,8 +205,8 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
         const cubiertos = revisarTodos.filter(pk => isStarterKPropCoveredByRadar(pk, analysis.radar));
         const revisar   = revisarTodos.filter(pk => !cubiertos.includes(pk));
         const fmtCuota  = (c) => (c > 0 ? `+${c}` : `${c}`);
-        const chip      = (v) => (v === "SIN CUOTA" || v === "SIN VERIFICAR" || String(v).startsWith("SEÑAL")) ? v : `VALOR ${v}`;
-        const pvCls     = (v) => v === "SEÑAL ALTA" ? "ALTO" : v === "SEÑAL MEDIA" ? "MEDIO" : v === "SEÑAL BAJA" ? "BAJO" : v;
+        const chip      = (v) => (v === "SIN CUOTA" || v === "SIN VERIFICAR" || v === "SIN VALOR" || String(v).startsWith("SEÑAL")) ? v : `VALOR ${v}`;
+        const pvCls     = (v) => v === "SEÑAL ALTA" ? "ALTO" : v === "SEÑAL MEDIA" ? "MEDIO" : (v === "SEÑAL BAJA" || v === "SIN VALOR") ? "BAJO" : v;
         const Pick = ({ pk }) => (
           <div className="pick">
             <div className="pick-top">
