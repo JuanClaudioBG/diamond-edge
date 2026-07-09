@@ -273,6 +273,64 @@ test("sanitizeNarratives no toca frases ofensivas sin equipos claros", () => {
   assert.equal(analysis.resumen, "Mejor OPS de temporada (.713 vs .732) sin contexto suficiente.");
 });
 
+test("sanitizeNarratives pule frase rara de Moneyline sin tocar campos estructurados", () => {
+  const analysis = {
+    picks: [{
+      tipo: "Moneyline",
+      categoria: "Moneyline",
+      pick: "Milwaukee Brewers ML",
+      valor: "BAJO",
+      razon: "Ventaja moderada identificada por el modelo, no una apuesta de ventaja moderada.",
+      cuotaReal: -126,
+      verificado: true,
+      ev: 0.3,
+    }],
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(analysis.picks[0].razon, "Ventaja identificada por el modelo, pero edge de mercado bajo.");
+  assert.equal(analysis.picks[0].tipo, "Moneyline");
+  assert.equal(analysis.picks[0].categoria, "Moneyline");
+  assert.equal(analysis.picks[0].pick, "Milwaukee Brewers ML");
+  assert.equal(analysis.picks[0].cuotaReal, -126);
+  assert.equal(analysis.picks[0].verificado, true);
+  assert.equal(analysis.picks[0].ev, 0.3);
+});
+
+test("sanitizeNarratives corrige margen de Under: queda por debajo de la línea", () => {
+  const analysis = {
+    totalCarreras: {
+      proyectado: "7.8",
+      lineaMercado: 8.5,
+      recomendacion: "UNDER",
+      razon: "Proyección interna de 7.8 carreras ofrece margen de 0.7 sobre la línea 8.5.",
+    },
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(
+    analysis.totalCarreras.razon,
+    "Proyección interna de 7.8 carreras queda 0.7 por debajo de la línea 8.5."
+  );
+  assert.equal(analysis.totalCarreras.proyectado, "7.8");
+  assert.equal(analysis.totalCarreras.lineaMercado, 8.5);
+  assert.equal(analysis.totalCarreras.recomendacion, "UNDER");
+});
+
+test("sanitizeNarratives no cambia margen sobre la línea cuando la dirección es Over", () => {
+  const analysis = {
+    totalCarreras: {
+      proyectado: "9.2",
+      lineaMercado: 8.5,
+      recomendacion: "OVER",
+      razon: "Proyección interna de 9.2 carreras ofrece margen de 0.7 sobre la línea 8.5.",
+    },
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(
+    analysis.totalCarreras.razon,
+    "Proyección interna de 9.2 carreras ofrece margen de 0.7 sobre la línea 8.5."
+  );
+});
+
 test("totalDisplay: senalClara=false → SEÑAL NO CLARA; dirección corregida se muestra", () => {
   const noClara = totalDisplay({ proyectado: "9.9", lineaMercado: 10, recomendacion: "UNDER", senalClara: false });
   assert.equal(noClara.senal, "SEÑAL NO CLARA");

@@ -94,6 +94,34 @@ export function degradeHypeLanguage(text) {
 }
 
 /**
+ * Pulido estrecho: evita la frase rara "no una apuesta de ventaja..." sin
+ * borrar la idea importante de edge bajo. No toca cuotas, equipos ni métricas.
+ */
+export function fixAwkwardValueWording(text) {
+  return String(text ?? "")
+    .replace(
+      /\bVentaja\s+moderada\s+identificada\s+por\s+el\s+modelo,\s*no\s+(?:es\s+)?una\s+apuesta\s+de\s+ventaja\s+(?:moderada|alta|baja)\.?/gi,
+      "Ventaja identificada por el modelo, pero edge de mercado bajo."
+    )
+    .replace(
+      /\bno\s+(?:es\s+)?una\s+apuesta\s+de\s+ventaja\s+(?:moderada|alta|baja)\b/gi,
+      "edge de mercado bajo"
+    );
+}
+
+/**
+ * Si el servidor/LLM ya marcó UNDER, "margen sobre la línea" invierte el
+ * sentido visual. Solo reescribe el texto; conserva proyección, margen y línea.
+ */
+export function fixUnderTotalMarginWording(text, recommendation) {
+  if (recommendation !== "UNDER") return String(text ?? "");
+  return String(text ?? "").replace(
+    /\b((?:Proyecci[oó]n|proyecci[oó]n)[^.!?]*?\d+(?:[.,]\d+)?\s+carreras?)\s+(?:ofrece|tiene|presenta)\s+(?:un\s+)?margen\s+de\s+(\d+(?:[.,]\d+)?)\s+sobre\s+la\s+l[ií]nea\s+(\d+(?:[.,]\d+)?)/g,
+    "$1 queda $2 por debajo de la línea $3"
+  );
+}
+
+/**
  * Narrativa de Moneyline: elimina oraciones que citen una cuota americana
  * DISTINTA a la congelada, o que hablen de probabilidad implícita bruta.
  * La cuota real (si coincide) y los porcentajes deportivos sobreviven.
@@ -117,7 +145,7 @@ export function sanitizeNarratives(analysis) {
   if (!analysis || typeof analysis !== "object") return analysis;
   /* fixMoneylineWording también aquí: la implícita bruta entre paréntesis
      confunde junto a la probabilidad sin vig oficial, en CUALQUIER campo */
-  const clean = (t) => degradeHypeLanguage(sanitizeUnverifiedRankings(sanitizeOffensiveComparisons(fixMetricComparisons(fixMoneylineWording(t)))));
+  const clean = (t) => fixAwkwardValueWording(degradeHypeLanguage(sanitizeUnverifiedRankings(sanitizeOffensiveComparisons(fixMetricComparisons(fixMoneylineWording(t))))));
   if (typeof analysis.resumen === "string") analysis.resumen = clean(analysis.resumen);
   if (typeof analysis.ventajaPitcheoTexto === "string") analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
   if (typeof analysis.ventajaOfensivaTexto === "string") analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
@@ -125,9 +153,18 @@ export function sanitizeNarratives(analysis) {
     analysis.factoresClave = analysis.factoresClave.map(f => typeof f === "string" ? clean(f) : f);
   }
   if (typeof analysis.prediccion?.razon === "string") analysis.prediccion.razon = clean(analysis.prediccion.razon);
-  if (typeof analysis.totalCarreras?.razon === "string") analysis.totalCarreras.razon = clean(analysis.totalCarreras.razon);
+  if (typeof analysis.totalCarreras?.razon === "string") {
+    analysis.totalCarreras.razon = fixUnderTotalMarginWording(
+      clean(analysis.totalCarreras.razon),
+      analysis.totalCarreras.recomendacion
+    );
+  }
   if (Array.isArray(analysis.picks)) {
-    for (const p of analysis.picks) if (typeof p?.razon === "string") p.razon = clean(p.razon);
+    for (const p of analysis.picks) {
+      if (typeof p?.razon !== "string") continue;
+      const side = norm(p.tipo).startsWith("total") && /\bunder\b/i.test(p.pick ?? "") ? "UNDER" : null;
+      p.razon = fixUnderTotalMarginWording(clean(p.razon), side);
+    }
   }
   return analysis;
 }
@@ -405,12 +442,12 @@ export function sanitizeOffensiveComparisons(text) {
    el servidor. Cambio lingüístico conservado: "A precio" → "A cuota".
    Badge VALOR, cuota, probabilidad del modelo y EV quedan intactos. */
 export function fixMoneylineWording(text) {
-  return String(text ?? "")
+  return fixAwkwardValueWording(String(text ?? "")
     /* "(implícita ~55.7%)" — palabra primero */
     .replace(/\s*\((?:prob(?:abilidad)?\.?\s+)?impl[ií]cit[oa]\s+~?\s*(?:de\s+)?~?\s*\d+(?:[.,]\d+)?\s*%\)/gi, "")
     /* "(46.3% implícito)" — número primero */
     .replace(/\s*\(\s*~?\d+(?:[.,]\d+)?\s*%\s+impl[ií]cit[oa]s?\s*\)/gi, "")
-    .replace(/\b([Aa]) precio\b/g, "$1 cuota");
+    .replace(/\b([Aa]) precio\b/g, "$1 cuota"));
 }
 
 function preferredBook(oddsGame) {
