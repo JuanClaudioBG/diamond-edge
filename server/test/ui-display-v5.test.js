@@ -155,7 +155,7 @@ test("AnalysisTab incluye sección Batter Radar compacta sin botón PARLAY dentr
   const block = src.slice(start, end);
   assert.match(block, /RADAR DE BATEADORES/);
   assert.match(block, /Mejores ángulos/);
-  assert.match(block, /PROP PARA REVISAR/);
+  assert.match(block, /Líneas verificadas solo como referencia; no entra a ROI, CLV ni muestra oficial/);
   assert.match(block, /marketLine/);
   assert.match(block, /recentLine/);
   assert.match(block, /statcastLine/);

@@ -88,9 +88,29 @@ const BATTER_MARKETS = [
 ];
 
 const propStatus = (key, m) => {
+  if (m?.status === "LINEA_VERIFICADA") {
+    if (key === "homeRuns") return "LÍNEA VERIFICADA · SOLO ÁNGULO";
+    if (key === "rbi") return "LÍNEA VERIFICADA · BAJA CONFIANZA";
+    return "LÍNEA VERIFICADA";
+  }
   if (key === "homeRuns") return "SOLO ÁNGULO";
   if (key === "rbi") return "BAJA CONFIANZA";
   return m?.line ? "SEÑAL" : "PROP PARA REVISAR";
+};
+
+const fmtPrice = (p) => p == null ? null : (p > 0 ? `+${p}` : `${p}`);
+
+/* Texto por mercado del Batter Radar. Línea verificada: cuota real de
+   referencia, jamás VALOR ni EV; HR/RBI conservan lenguaje cauteloso. */
+const propMarketText = (key, label, m) => {
+  if (m?.status !== "LINEA_VERIFICADA") return `${label}: ${propStatus(key, m)}`;
+  if (key === "homeRuns") return `${label}: Línea ${m.line} verificada · SOLO ÁNGULO`;
+  if (key === "rbi")      return `${label}: Línea ${m.line} verificada · BAJA CONFIANZA`;
+  const prices = [
+    m.overPrice != null ? `Over ${fmtPrice(m.overPrice)}` : null,
+    m.underPrice != null ? `Under ${fmtPrice(m.underPrice)}` : null,
+  ].filter(Boolean).join(" / ");
+  return `${label}: Línea ${m.line} verificada${prices ? ` · ${prices}` : ""}`;
 };
 const bestBatterScore = (card) => {
   const scores = ["hits", "totalBases", "homeRuns"]
@@ -194,14 +214,21 @@ export function batterRadarDisplay(radar) {
         label: card.label ?? "Radar",
         score,
         insufficient: card.insufficient === true,
-        chips: BATTER_MARKETS.map(([key, label]) => ({
-          key,
-          label,
-          status: propStatus(key, card.markets?.[key]),
-          line: card.markets?.[key]?.line ?? null,
-        })),
+        chips: BATTER_MARKETS.map(([key, label]) => {
+          const m = card.markets?.[key];
+          return {
+            key,
+            label,
+            status: propStatus(key, m),
+            line: m?.line ?? null,
+            verified: m?.status === "LINEA_VERIFICADA",
+            overPrice: m?.overPrice ?? null,
+            underPrice: m?.underPrice ?? null,
+            book: m?.book ?? null,
+          };
+        }),
         heading: `${card.name}${card.lineupSlot != null ? ` · Slot ${card.lineupSlot}` : ""}${score != null ? ` · ${score}/10` : ""}`,
-        marketLine: BATTER_MARKETS.map(([key, label]) => `${label}: ${propStatus(key, card.markets?.[key])}`).join(" · "),
+        marketLine: BATTER_MARKETS.map(([key, label]) => propMarketText(key, label, card.markets?.[key])).join(" · "),
         recentLine: compactRecent(card),
         statcast,
         statcastLine: statcast.join(" · "),

@@ -219,7 +219,7 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
             )}
             {batterRadar.status !== "LINEUP_NO_CONFIRMADO" && (
               <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginTop: 3 }}>
-                Radar informativo · PROP PARA REVISAR hasta verificar línea real. No entra a ROI, CLV ni muestra oficial.
+                Radar informativo. Líneas verificadas solo como referencia; no entra a ROI, CLV ni muestra oficial.
               </div>
             )}
           </div>

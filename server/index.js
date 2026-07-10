@@ -12,6 +12,7 @@ import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTo
 import { getStrikeoutRadar } from "./radar.js";
 import { buildBatterRadar } from "./batter-radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
+import { fetchEventBatterProps, verifyBatterRadarLines } from "./player-props.js";
 
 dotenv.config();
 
@@ -923,6 +924,24 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
         home: { teamName: h.team.name, lineupConfirmed: hOrder.length > 0, cards: [] },
         nota: "Batter Radar no disponible; no se inventan jugadores ni mercados.",
       };
+    }
+
+    /* ── F5: líneas reales de player props para el Batter Radar, desde el
+       endpoint POR EVENTO de The Odds API. SOLO verificación informativa:
+       matching exacto jugador/mercado/point; sin picks oficiales, sin EV,
+       sin ROI/CLV. Cualquier fallo deja el radar tal cual. ── */
+    try {
+      if (analysis.batterRadar && oddsGame?.id) {
+        const propsSnapshot = await fetchEventBatterProps({
+          eventId: oddsGame.id,
+          apiKey: process.env.ODDS_API_KEY,
+        });
+        if (propsSnapshot) {
+          analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
+        }
+      }
+    } catch (propsErr) {
+      console.error("[BatterProps] Error:", propsErr.message);
     }
 
     /* ── Registro para backtest (ver docs/BACKTEST_METHODOLOGY.md) ── */
