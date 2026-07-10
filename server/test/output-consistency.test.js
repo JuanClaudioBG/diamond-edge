@@ -135,6 +135,34 @@ test(`|gap| < ${TOTAL_DIRECTION_GAP} → senalClara:false, sin dirección fabric
   assert.deepEqual(same, input);
 });
 
+test("gap insuficiente 8.6 vs 8.5 degrada pick Total a noOficial y no queda activo para parlay", () => {
+  const pick = { tipo: "Total", pick: "Under 8.5", valor: "SEÑAL MEDIA", razon: "u", cuotaReal: +102, verificado: true };
+  const { totalCarreras: t, picks } = enforceTotalDirection(
+    { proyectado: "8.6", lineaMercado: 8.5, recomendacion: "UNDER", senalClara: false, razon: "cerca" },
+    [pick]
+  );
+  assert.equal(t.senalClara, false);
+  assert.equal(t.recomendacion, "UNDER", "no se inventa OVER con gap pequeño");
+  assert.equal(picks[0].valor, "SEÑAL NO OFICIAL");
+  assert.equal(picks[0].noOficial, true);
+  assert.equal(picks[0].pick, "Under 8.5");
+  assert.equal(picks[0].cuotaReal, +102);
+  assert.equal(picks[0].verificado, true);
+  assert.match(picks[0].razon, /Gap del total insuficiente; la proyección queda demasiado cerca de la línea para validar una señal/);
+  assert.equal(pickBadge(picks[0]).activo, false);
+});
+
+test("total claro coherente: 7.8 vs 8.5 Under y 9.2 vs 8.5 Over siguen intactos", () => {
+  const under = { tipo: "Total", pick: "Under 8.5", valor: "SEÑAL MEDIA", razon: "u", cuotaReal: -110 };
+  const over  = { tipo: "Total", pick: "Over 8.5", valor: "SEÑAL MEDIA", razon: "o", cuotaReal: -105 };
+  const u = enforceTotalDirection({ proyectado: "7.8", lineaMercado: 8.5, recomendacion: "UNDER", razon: "x" }, [under]);
+  const o = enforceTotalDirection({ proyectado: "9.2", lineaMercado: 8.5, recomendacion: "OVER", razon: "y" }, [over]);
+  assert.deepEqual(u.picks[0], under);
+  assert.deepEqual(o.picks[0], over);
+  assert.ok(!("senalClara" in u.totalCarreras) || u.totalCarreras.senalClara !== false);
+  assert.ok(!("senalClara" in o.totalCarreras) || o.totalCarreras.senalClara !== false);
+});
+
 /* ═══ 8. Pick Total contradictorio → SEÑAL NO OFICIAL; coherente → intacto ═══ */
 test("pick Total que contradice la dirección del servidor → SEÑAL NO OFICIAL + noOficial, auditoría conservada; el coherente queda intacto", () => {
   const contradictorio = { tipo: "Total", pick: "Over 10", valor: "SEÑAL MEDIA", razon: "y", cuotaReal: -110, verificado: true };
@@ -166,6 +194,15 @@ test("'xERA 4.78 supera ERA 5.40' (falso) → verbo corregido; el verdadero qued
   // También la dirección inversa mal redactada
   const inverso = fixMetricComparisons("El FIP 5.10 está por debajo del ERA 3.90 del abridor.");
   assert.match(inverso, /FIP 5\.10 está por encima del ERA 3\.90/);
+});
+
+test("threshold wording de pitcheo corrige ERA vs umbral sin tocar líneas ni cuotas", () => {
+  const bajo = fixMetricComparisons("Regla de bullpen: ERA 4.24 por encima de 4.50 activa cautela.");
+  assert.match(bajo, /ERA 4\.24 está por debajo de 4\.50/);
+  const alto = fixMetricComparisons("Métrica de pitcheo: ERA 5.10 por debajo de 4.50 es mala señal.");
+  assert.match(alto, /ERA 5\.10 está por encima de 4\.50/);
+  const intacto = "Cuota +102 y línea -1.5 quedan intactas.";
+  assert.equal(fixMetricComparisons(intacto), intacto);
 });
 
 /* ═══ 11. Mapeo semántico proceso/resultados ═══ */
@@ -351,6 +388,30 @@ test("sanitizeNarratives corrige margen de Under: queda por debajo de la línea"
   assert.equal(analysis.totalCarreras.recomendacion, "UNDER");
 });
 
+test("sanitizeNarratives corrige narrativa matemática falsa contra línea de total", () => {
+  const arriba = {
+    totalCarreras: {
+      proyectado: "8.6",
+      lineaMercado: 8.5,
+      recomendacion: "UNDER",
+      razon: "Proyección propia de 8.6 carreras está marginalmente por debajo de la línea de 8.5.",
+    },
+  };
+  sanitizeNarratives(arriba);
+  assert.match(arriba.totalCarreras.razon, /8\.6 carreras está marginalmente por encima de la línea 8\.5/);
+
+  const abajo = {
+    totalCarreras: {
+      proyectado: "7.8",
+      lineaMercado: 8.5,
+      recomendacion: "UNDER",
+      razon: "Proyección propia de 7.8 carreras está por encima de la línea 8.5.",
+    },
+  };
+  sanitizeNarratives(abajo);
+  assert.match(abajo.totalCarreras.razon, /7\.8 carreras está por debajo de la línea 8\.5/);
+});
+
 test("sanitizeNarratives no cambia margen sobre la línea cuando la dirección es Over", () => {
   const analysis = {
     totalCarreras: {
@@ -365,6 +426,31 @@ test("sanitizeNarratives no cambia margen sobre la línea cuando la dirección e
     analysis.totalCarreras.razon,
     "Proyección interna de 9.2 carreras ofrece margen de 0.7 sobre la línea 8.5."
   );
+});
+
+test("sanitizeNarratives no toca Moneyline EV ni Batter Radar", () => {
+  const batterRadar = {
+    status: "OK",
+    away: { cards: [{ name: "A", markets: { hits: { status: "PROP_PARA_REVISAR" } } }] },
+    home: { cards: [] },
+  };
+  const analysis = {
+    batterRadar,
+    picks: [{
+      tipo: "Moneyline",
+      pick: "Dodgers ML",
+      valor: "BAJO",
+      razon: "Ventaja moderada identificada por el modelo, no una apuesta de ventaja moderada.",
+      cuotaReal: -120,
+      verificado: true,
+      ev: 0.3,
+    }],
+  };
+  sanitizeNarratives(analysis);
+  assert.equal(analysis.picks[0].cuotaReal, -120);
+  assert.equal(analysis.picks[0].ev, 0.3);
+  assert.equal(analysis.picks[0].valor, "BAJO");
+  assert.deepEqual(analysis.batterRadar, batterRadar);
 });
 
 test("totalDisplay: senalClara=false → SEÑAL NO CLARA; dirección corregida se muestra", () => {

@@ -122,6 +122,23 @@ export function fixUnderTotalMarginWording(text, recommendation) {
 }
 
 /**
+ * Comparaciones numéricas contra la línea de total. Solo actúa si la frase
+ * trae contexto de proyección/carreras y dos números claros.
+ */
+export function fixTotalLineComparisonWording(text) {
+  return String(text ?? "").replace(
+    /\b((?:Proyecci[oó]n|proyecci[oó]n)[^.!?]*?(\d+(?:[.,]\d+)?)[^.!?]*?\b(?:carreras?)?[^.!?]*?\b(?:est[áa]\s+|queda\s+)?(?:marginalmente\s+)?)por\s+(debajo|encima)\s+de\s+la\s+l[ií]nea(?:\s+de)?\s+(\d+(?:[.,]\d+)?)/gi,
+    (m, prefix, aStr, dir, bStr) => {
+      const a = parseFloat(String(aStr).replace(",", "."));
+      const b = parseFloat(String(bStr).replace(",", "."));
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return m;
+      const actual = a > b ? "encima" : "debajo";
+      return dir.toLowerCase() === actual ? m : `${prefix}por ${actual} de la línea ${bStr}`;
+    }
+  );
+}
+
+/**
  * Narrativa de Moneyline: elimina oraciones que citen una cuota americana
  * DISTINTA a la congelada, o que hablen de probabilidad implícita bruta.
  * La cuota real (si coincide) y los porcentajes deportivos sobreviven.
@@ -145,7 +162,7 @@ export function sanitizeNarratives(analysis) {
   if (!analysis || typeof analysis !== "object") return analysis;
   /* fixMoneylineWording también aquí: la implícita bruta entre paréntesis
      confunde junto a la probabilidad sin vig oficial, en CUALQUIER campo */
-  const clean = (t) => fixAwkwardValueWording(degradeHypeLanguage(sanitizeUnverifiedRankings(sanitizeOffensiveComparisons(fixMetricComparisons(fixMoneylineWording(t))))));
+  const clean = (t) => fixTotalLineComparisonWording(fixAwkwardValueWording(degradeHypeLanguage(sanitizeUnverifiedRankings(sanitizeOffensiveComparisons(fixMetricComparisons(fixMoneylineWording(t)))))));
   if (typeof analysis.resumen === "string") analysis.resumen = clean(analysis.resumen);
   if (typeof analysis.ventajaPitcheoTexto === "string") analysis.ventajaPitcheoTexto = clean(analysis.ventajaPitcheoTexto);
   if (typeof analysis.ventajaOfensivaTexto === "string") analysis.ventajaOfensivaTexto = clean(analysis.ventajaOfensivaTexto);
@@ -314,7 +331,8 @@ export function relabelImpliedNoVigNarratives(analysis, mercado) {
  *   |gap| < 0.3 → senalClara:false (sin dirección fuerte fabricada).
  * Un pick de Total que contradiga la dirección deja de ser recomendación
  * activa: SEÑAL NO OFICIAL + noOficial:true, conservando pick, cuotaReal,
- * verificado y razón como auditoría.
+ * verificado y razón como auditoría. Con gap insuficiente, cualquier pick de
+ * Total queda como SEÑAL NO OFICIAL: el servidor no valida dirección.
  * Puro: devuelve { totalCarreras, picks } nuevos; sin números no toca nada.
  */
 export const TOTAL_DIRECTION_GAP = 0.3;
@@ -338,20 +356,35 @@ export function enforceTotalDirection(totalCarreras, picks) {
     }
   }
   let outPicks = picks;
-  if (dir && Array.isArray(picks)) {
-    outPicks = picks.map(pick => {
-      if (!norm(pick?.tipo).startsWith("total")) return pick;
-      const m = String(pick.pick ?? "").match(/\b(over|under)\b/i);
-      if (!m) return pick;
-      const side = m[1].toUpperCase();
-      if (side === dir) return pick;                                // coherente: intacto
-      return {
-        ...pick,
-        valor: "SEÑAL NO OFICIAL",
-        noOficial: true,
-        razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
-      };
-    });
+  if (Array.isArray(picks)) {
+    if (dir) {
+      outPicks = picks.map(pick => {
+        if (!norm(pick?.tipo).startsWith("total")) return pick;
+        const m = String(pick.pick ?? "").match(/\b(over|under)\b/i);
+        if (!m) return pick;
+        const side = m[1].toUpperCase();
+        if (side === dir) return pick;                              // coherente: intacto
+        return {
+          ...pick,
+          valor: "SEÑAL NO OFICIAL",
+          noOficial: true,
+          razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
+        };
+      });
+    } else {
+      /* Gap insuficiente: el pick de Total no puede salir como recomendación
+         cuando el propio servidor dice SEÑAL NO CLARA */
+      outPicks = picks.map(pick => {
+        if (!norm(pick?.tipo).startsWith("total")) return pick;
+        if (pick.noOficial === true || pick.valor === "SEÑAL NO OFICIAL") return pick;
+        return {
+          ...pick,
+          valor: "SEÑAL NO OFICIAL",
+          noOficial: true,
+          razon: `⚠️ Gap del total insuficiente; la proyección queda demasiado cerca de la línea para validar una señal (proyección ${proy} vs línea ${linea}). ${pick.razon ?? ""}`.trim(),
+        };
+      });
+    }
   }
   return { totalCarreras: t, picks: outPicks };
 }
@@ -366,8 +399,21 @@ export function enforceTotalDirection(totalCarreras, picks) {
  */
 const CMP_ABOVE = /supera(?:\s+(?:a|al|el|su))?|es\s+mayor\s+que|mayor\s+que|por\s+encima\s+de(?:l)?|excede(?:\s+(?:a|al|el|su))?/i;
 
+export function fixPitchingThresholdWording(text) {
+  return String(text ?? "").replace(
+    /\bERA(?:\s+de)?\s+(\d+(?:\.\d+)?)\s+((?:est[áa]\s+)?por\s+(encima|debajo)\s+de(?:l)?)(?:\s+(?:umbral|regla))?(?:\s+de)?\s+(\d+(?:\.\d+)?)/gi,
+    (m, aStr, cmp, dir, bStr) => {
+      const a = parseFloat(aStr), b = parseFloat(bStr);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return m;
+      const actual = a > b ? "encima" : "debajo";
+      if (dir.toLowerCase() === actual) return m;
+      return `ERA ${aStr} está por ${actual} de ${bStr}`;
+    }
+  );
+}
+
 export function fixMetricComparisons(text) {
-  let out = String(text ?? "");
+  let out = fixPitchingThresholdWording(text);
 
   /* Comparación numérica explícita metric A <cmp> ERA B. Tolera "de" entre
      métrica y número ("xERA de 4.62 supera ERA 5.13") y "está por encima". */
