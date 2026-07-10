@@ -369,9 +369,11 @@ const CMP_ABOVE = /supera(?:\s+(?:a|al|el|su))?|es\s+mayor\s+que|mayor\s+que|por
 export function fixMetricComparisons(text) {
   let out = String(text ?? "");
 
-  /* Comparación numérica explícita metric A <cmp> ERA B */
+  /* Comparación numérica explícita metric A <cmp> ERA B. Tolera "de" entre
+     métrica y número ("xERA de 4.62 supera ERA 5.13") y "está por encima". */
+  const CMP_VERBS = "supera(?:\\s+(?:a|al|el|su))?|es\\s+mayor\\s+que|mayor\\s+que|(?:está\\s+)?por\\s+encima\\s+de(?:l)?|excede(?:\\s+(?:a|al|el|su))?|es\\s+menor\\s+que|menor\\s+que|(?:está\\s+)?por\\s+debajo\\s+de(?:l)?";
   out = out.replace(
-    /\b(xERA|xFIP|FIP)\s+(\d+(?:\.\d+)?)\s+(supera(?:\s+(?:a|al|el|su))?|es\s+mayor\s+que|mayor\s+que|por\s+encima\s+de(?:l)?|excede(?:\s+(?:a|al|el|su))?|es\s+menor\s+que|menor\s+que|(?:está\s+)?por\s+debajo\s+de(?:l)?)\s+(?:el\s+|su\s+)?ERA(?:\s+de)?\s+(\d+(?:\.\d+)?)/gi,
+    new RegExp(`\\b(xERA|xFIP|FIP)(?:\\s+de)?\\s+(\\d+(?:\\.\\d+)?)\\s+(${CMP_VERBS})\\s+(?:el\\s+|su\\s+)?ERA(?:\\s+de)?\\s+(\\d+(?:\\.\\d+)?)`, "gi"),
     (m, metric, aStr, cmp, bStr) => {
       const a = parseFloat(aStr), b = parseFloat(bStr);
       const saysAbove = CMP_ABOVE.test(cmp);
@@ -380,6 +382,20 @@ export function fixMetricComparisons(text) {
       return isAbove
         ? `${metric} ${aStr} está por encima del ERA ${bStr}`
         : `${metric} ${aStr} está por debajo del ERA ${bStr}`;
+    }
+  );
+
+  /* Espejo: ERA A <cmp> xERA/xFIP/FIP B — misma corrección de verbo */
+  out = out.replace(
+    new RegExp(`\\bERA(?:\\s+de)?\\s+(\\d+(?:\\.\\d+)?)\\s+(${CMP_VERBS})\\s+(?:el\\s+|su\\s+)?(xERA|xFIP|FIP)(?:\\s+de)?\\s+(\\d+(?:\\.\\d+)?)`, "gi"),
+    (m, aStr, cmp, metric, bStr) => {
+      const a = parseFloat(aStr), b = parseFloat(bStr);
+      const saysAbove = CMP_ABOVE.test(cmp);
+      const isAbove   = a > b;
+      if (saysAbove === isAbove) return m;
+      return isAbove
+        ? `ERA ${aStr} está por encima del ${metric} ${bStr}`
+        : `ERA ${aStr} está por debajo del ${metric} ${bStr}`;
     }
   );
 

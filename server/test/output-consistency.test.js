@@ -179,6 +179,42 @@ test("'FIP mayor que ERA … peores que el proceso' → corregido a 'mejores'", 
   assert.equal(fixMetricComparisons(correcto), correcto, "mapeo correcto intacto");
 });
 
+/* ═══ 11b. Caso real Corey Sproat: "de" entre métrica y número + espejo ERA-primero ═══ */
+test("'xERA de 4.62 supera ERA 5.13 en 0.51' (falso: 4.62 < 5.13) → verbo corregido, resto intacto", () => {
+  const out = fixMetricComparisons("Corey Sproat xERA de 4.62 supera ERA 5.13 en 0.51 este año.");
+  assert.ok(!/supera/.test(out), `verbo contradictorio sobrevivió: ${out}`);
+  assert.match(out, /xERA 4\.62 está por debajo del? ERA 5\.13 en 0\.51/, "números y cola 'en 0.51' se conservan");
+});
+
+test("'xERA 5.20 está por debajo de ERA 4.10' (falso: 5.20 > 4.10) → corregido a por encima", () => {
+  const out = fixMetricComparisons("Su xERA 5.20 está por debajo de ERA 4.10, señal engañosa.");
+  assert.match(out, /xERA 5\.20 está por encima del? ERA 4\.10/);
+  assert.match(out, /señal engañosa/, "el resto de la oración se conserva");
+});
+
+test("espejo ERA-primero: 'ERA 5.13 está por debajo del xERA 4.62' (falso) → corregido; el correcto queda intacto", () => {
+  const out = fixMetricComparisons("ERA de 5.13 está por debajo del xERA 4.62 del abridor.");
+  assert.match(out, /ERA 5\.13 está por encima del xERA 4\.62/);
+  const correcto = "ERA 5.13 supera xERA 4.62 con regresión esperada.";
+  assert.equal(fixMetricComparisons(correcto), correcto, "comparación ERA-primero verdadera intacta");
+  const correctoDe = "Corey Sproat xERA de 4.62 está por debajo del ERA 5.13 en 0.51.";
+  assert.equal(fixMetricComparisons(correctoDe), correctoDe, "la frase ya corregida no se re-toca");
+});
+
+test("sanitizeNarratives aplica la corrección con 'de' en resumen/factores/razones/picks", () => {
+  const analysis = {
+    resumen: "Corey Sproat xERA de 4.62 supera ERA 5.13 en 0.51.",
+    factoresClave: ["ERA de 5.13 menor que su xERA 4.62"],
+    prediccion: { razon: "xERA de 4.62 supera ERA 5.13." },
+    picks: [{ tipo: "Moneyline", razon: "Su xERA de 4.62 supera ERA 5.13 del rival." }],
+  };
+  sanitizeNarratives(analysis);
+  assert.match(analysis.resumen, /está por debajo del? ERA 5\.13/);
+  assert.match(analysis.factoresClave[0], /ERA 5\.13 está por encima del xERA 4\.62/);
+  assert.match(analysis.prediccion.razon, /está por debajo del? ERA 5\.13/);
+  assert.match(analysis.picks[0].razon, /está por debajo del? ERA 5\.13/);
+});
+
 /* ═══ 12. Métricas sueltas jamás se tocan ═══ */
 test("métricas sueltas y comparaciones sin ambos números quedan intactas", () => {
   const legit = "xERA 3.10 con K/9 11.2 y Whiff% 27.9; su ERA 5.40 preocupa. La línea -1.5 es viable.";
