@@ -470,8 +470,33 @@ function pointInText(text) {
   return m ? parseFloat(m[1]) : null;
 }
 
+/* Frases de "cuota no disponible" escritas por el LLM ANTES de que el
+   servidor adjuntara la cuota real: en un pick verificado son contradictorias
+   y se eliminan a nivel de oración. Solo narrativa; los campos estructurados
+   (cuotaReal, verificado, valor, evCalculado) no pasan por aquí. */
+const STALE_ODDS_CLAIM = /(cuota\s+no\s+disponible|no\s+est[áa]\s+listad[ao]|l[ií]neas\s+de\s+mercado\s+no\s+(?:incluyen|listan)|el\s+servidor\s+adjuntar[áa]|\bsin\s+cuota\b|no\s+hay\s+cuota)/i;
+const VERIFIED_FALLBACK_RAZON = "Cuota verificada por el servidor; no existe EV porque no hay probabilidad numérica del modelo para este mercado.";
+
+export function stripContradictoryOddsClaims(text) {
+  if (!text) return "";
+  return String(text)
+    .split(/(?<=[.!?])\s+/)
+    .filter(s => !STALE_ODDS_CLAIM.test(s))
+    .join(" ")
+    .trim();
+}
+
+/* Run Line caro sin EV calculado: la cuota se conserva tal cual, pero el
+   lenguaje no puede sonar confiado — advertencia fija, sin cambiar categoría. */
+export const RL_EXPENSIVE_PRICE = -180;
+
 /** Lado verificado: cuota real, badge degradado a señal, EV no calculable. */
 function verifiedResult(pick, out) {
+  let razon = stripContradictoryOddsClaims(sanitizeFinancialClaims(pick.razon));
+  if (!razon) razon = VERIFIED_FALLBACK_RAZON;
+  if (norm(pick.tipo).startsWith("runline") && out.price <= RL_EXPENSIVE_PRICE) {
+    razon = `${razon} Precio elevado (${out.price}); sin EV calculado no se puede confirmar valor.`;
+  }
   return {
     ...pick,
     verificado:  true,
@@ -479,7 +504,7 @@ function verifiedResult(pick, out) {
     lineaReal:   out.point,
     evCalculado: false,
     valor:       SENAL[pick.valor] ?? "SEÑAL",
-    razon:       `${VERIFIED_NOTE} ${sanitizeFinancialClaims(pick.razon)}`.trim(),
+    razon:       `${VERIFIED_NOTE} ${razon}`.trim(),
   };
 }
 

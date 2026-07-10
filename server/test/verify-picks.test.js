@@ -130,3 +130,75 @@ test("verifyPicks procesa el lote y sin odds todo RL/Total queda SIN CUOTA", () 
   assert.equal(out[3].tipo, "Prop para revisar");
   assert.equal(verifyPicks(null, null, HOME, AWAY), null, "picks ausentes pasan sin explotar");
 });
+
+/* ═══ Wording de RL/Total VERIFICADO (caso real Arizona +1.5 · -200) ═══ */
+import { stripContradictoryOddsClaims, RL_EXPENSIVE_PRICE } from "../verify-picks.js";
+
+const STALE_RAZON = "La cuota no está listada en LÍNEAS DE MERCADO para este lado específico — cuota no disponible para Vis +1.5 en los datos proporcionados; el servidor adjuntará la cuota verificada.";
+
+test("RL verificado -200: elimina 'cuota no disponible' y 'el servidor adjuntará' de la razón", () => {
+  const odds = mkOdds({ spreads: [{ name: AWAY, price: -200, point: +1.5 }] });
+  const v = verifyPick({ tipo: "Run Line", pick: "Detroit Tigers +1.5", valor: "MEDIO", razon: STALE_RAZON }, odds, HOME, AWAY);
+  assert.equal(v.verificado, true);
+  assert.equal(v.cuotaReal, -200);
+  assert.ok(!/cuota no disponible/i.test(v.razon), `sobrevivió: ${v.razon}`);
+  assert.ok(!/no está listada/i.test(v.razon));
+  assert.ok(!/el servidor adjuntará/i.test(v.razon));
+  assert.match(v.razon, /^CUOTA VERIFICADA · EV NO CALCULADO/);
+  assert.match(v.razon, /Cuota verificada por el servidor; no existe EV/,
+    "razón vacía tras el filtro → frase de reemplazo, no hueco");
+});
+
+test(`RL verificado con cuota <= ${RL_EXPENSIVE_PRICE}: agrega advertencia de precio elevado sin cambiar categoría`, () => {
+  const odds = mkOdds({ spreads: [{ name: AWAY, price: -200, point: +1.5 }] });
+  const v = verifyPick({ tipo: "Run Line", pick: "Detroit Tigers +1.5", valor: "MEDIO", razon: "El bullpen rival está fatigado." }, odds, HOME, AWAY);
+  assert.match(v.razon, /Precio elevado \(-200\); sin EV calculado no se puede confirmar valor\./);
+  assert.match(v.razon, /El bullpen rival está fatigado\./, "la razón deportiva legítima se conserva");
+  assert.equal(v.valor, "SEÑAL MEDIA", "categoría intacta (opción A: solo advertencia)");
+});
+
+test("RL con cuota positiva o moderada: sin advertencia de precio caro", () => {
+  const positiva = mkOdds({ spreads: [{ name: HOME, price: +126, point: +1.5 }] });
+  const vPos = verifyPick({ tipo: "Run Line", pick: "Texas Rangers +1.5", valor: "MEDIO", razon: "x." }, positiva, HOME, AWAY);
+  assert.ok(!/Precio elevado/.test(vPos.razon));
+  const moderada = mkOdds({ spreads: [{ name: AWAY, price: -152, point: -1.5 }] });
+  const vMod = verifyPick({ tipo: "Run Line", pick: "Detroit Tigers -1.5", valor: "MEDIO", razon: "x." }, moderada, HOME, AWAY);
+  assert.ok(!/Precio elevado/.test(vMod.razon));
+});
+
+test("Total verificado: contradicciones de cuota eliminadas; sin advertencia de precio (solo RL)", () => {
+  const odds = mkOdds({ totals: [{ name: "Under", price: -190, point: 7.5 }] });
+  const v = verifyPick({ tipo: "Total", pick: "Under 7.5", valor: "MEDIO", razon: `Pitcheo dominante esperado. ${STALE_RAZON}` }, odds, HOME, AWAY);
+  assert.equal(v.cuotaReal, -190);
+  assert.ok(!/cuota no disponible|no está listada|adjuntará/i.test(v.razon), `sobrevivió: ${v.razon}`);
+  assert.match(v.razon, /Pitcheo dominante esperado\./, "oración legítima intacta");
+  assert.ok(!/Precio elevado/.test(v.razon), "la advertencia de precio caro es exclusiva de Run Line");
+});
+
+test("Moneyline no se toca: ni filtro de frases contradictorias ni advertencia de precio", () => {
+  const v = verifyPick({ tipo: "Moneyline", pick: "Texas Rangers ML", valor: "MEDIO", razon: "Ventaja de pitcheo. Sin cuota clara aún." }, mkOdds(), HOME, AWAY);
+  assert.equal(v.valor, "MEDIO", "badge VALOR del ML intacto");
+  assert.ok(!/Precio elevado/.test(v.razon));
+  assert.match(v.razon, /Sin cuota clara aún\./, "el ML conserva su narrativa: este fix es solo RL/Total verificados");
+});
+
+test("campos estructurados intactos con el fix: cuotaReal, tipo, pick, verificado, evCalculado, lineaReal", () => {
+  const odds = mkOdds({ spreads: [{ name: AWAY, price: -200, point: +1.5 }] });
+  const v = verifyPick({ tipo: "Run Line", pick: "Detroit Tigers +1.5", valor: "ALTO", razon: STALE_RAZON, categoria: "RL" }, odds, HOME, AWAY);
+  assert.equal(v.tipo, "Run Line");
+  assert.equal(v.pick, "Detroit Tigers +1.5");
+  assert.equal(v.categoria, "RL");
+  assert.equal(v.cuotaReal, -200);
+  assert.equal(v.lineaReal, 1.5);
+  assert.equal(v.verificado, true);
+  assert.equal(v.evCalculado, false);
+  assert.equal(v.valor, "SEÑAL ALTA", "mapeo VALOR→SEÑAL preexistente, no alterado por el fix");
+});
+
+test("stripContradictoryOddsClaims: solo oraciones contradictorias; texto limpio y null intactos", () => {
+  assert.equal(stripContradictoryOddsClaims("ERA 3.10 sólido. No hay cuota para este lado. Buen matchup."),
+    "ERA 3.10 sólido. Buen matchup.");
+  assert.equal(stripContradictoryOddsClaims("Análisis sin menciones de cuotas raras."),
+    "Análisis sin menciones de cuotas raras.");
+  assert.equal(stripContradictoryOddsClaims(null), "");
+});
