@@ -46,6 +46,20 @@ test("win rate ignora pendientes", () => {
   assert.equal(record([mkPick({ resultado: null })]).winRate, null, "solo pendientes → winRate null");
 });
 
+test("push y void son terminales pero no entran al denominador del win rate", () => {
+  const r = record([
+    mkPick({ resultado: "ganó" }),
+    mkPick({ resultado: "perdió" }),
+    mkPick({ resultado: "push" }),
+    mkPick({ resultado: "void" }),
+    mkPick({ resultado: null }),
+  ]);
+  assert.equal(r.winRate, 0.5);
+  assert.equal(r.pushes, 1);
+  assert.equal(r.voids, 1);
+  assert.equal(r.pendientes, 1);
+});
+
 /* ═══ 2. ROI solo Moneyline con cuota real ═══ */
 test("ROI: 2 ML ganados a -120/+100 y 1 perdido = unidades exactas; pick sin odds excluido y contado", () => {
   const a1 = mkAnalysis({ id: 1 });

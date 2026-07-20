@@ -104,13 +104,18 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
   const total     = picks.length;
   const ganados   = picks.filter(p => p.resultado === "ganó").length;
   const perdidos  = picks.filter(p => p.resultado === "perdió").length;
-  const pendientes = total - ganados - perdidos;
-  const pct       = total > 0 ? Math.round((ganados / (ganados + perdidos || 1)) * 100) : 0;
+  const pushes    = picks.filter(p => p.resultado === "push").length;
+  const voids     = picks.filter(p => p.resultado === "void").length;
+  const pendientes = picks.filter(p => p.resultado == null).length;
+  const pct       = ganados + perdidos > 0 ? Math.round((ganados / (ganados + perdidos)) * 100) : 0;
 
   const desglose = picks.reduce((acc, p) => {
-    if (!acc[p.tipo]) acc[p.tipo] = { total: 0, ganados: 0 };
+    if (!acc[p.tipo]) acc[p.tipo] = { total: 0, ganados: 0, perdidos: 0, pushes: 0, voids: 0 };
     acc[p.tipo].total++;
     if (p.resultado === "ganó") acc[p.tipo].ganados++;
+    if (p.resultado === "perdió") acc[p.tipo].perdidos++;
+    if (p.resultado === "push") acc[p.tipo].pushes++;
+    if (p.resultado === "void") acc[p.tipo].voids++;
     return acc;
   }, {});
 
@@ -136,6 +141,9 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
           { v: `${pct}%`,  l: "% Ganados",    cls: "gn" },
           { v: ganados,    l: "Ganados",       cls: "gn" },
           { v: perdidos,   l: "Perdidos",      cls: "rd" },
+          { v: pushes,     l: "Push",           cls: "dm" },
+          { v: voids,      l: "Void",           cls: "dm" },
+          { v: pendientes, l: "Pendientes",     cls: "dm" },
         ].map(({ v, l, cls }) => (
           <div key={l} className="hst">
             <div className={`hst-v ${cls}`}>{v}</div>
@@ -153,9 +161,9 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
               {Object.entries(desglose).map(([tipo, d]) => (
                 <>
                   <span key={`${tipo}-t`} className="hbk-t">{tipo}</span>
-                  <span key={`${tipo}-v`} className="hbk-v">{d.ganados}/{d.total}</span>
+                  <span key={`${tipo}-v`} className="hbk-v">{d.ganados}/{d.ganados + d.perdidos}</span>
                   <span key={`${tipo}-p`} className="hbk-v" style={{ color: d.ganados > 0 ? "var(--gn)" : "var(--dm)" }}>
-                    {d.total > 0 ? `${Math.round((d.ganados / d.total) * 100)}%` : "–"}
+                    {d.ganados + d.perdidos > 0 ? `${Math.round((d.ganados / (d.ganados + d.perdidos)) * 100)}%` : "–"}
                   </span>
                 </>
               ))}
@@ -173,6 +181,8 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
             <div className="hpick-mt">{p.tipo} · Valor: {p.valor} · Riesgo: {p.riesgo}</div>
           </div>
           <div className="rbtns">
+            {p.resultado === "push" && <span className="rbtn on">PUSH</span>}
+            {p.resultado === "void" && <span className="rbtn on">VOID</span>}
             <button
               className={`rbtn gano${p.resultado === "ganó" ? " on" : ""}`}
               onClick={() => onMarcarResultado(p.id, p.resultado === "ganó" ? null : "ganó")}

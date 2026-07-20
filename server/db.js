@@ -105,6 +105,38 @@ export const insertPick = ({
 export const updateResultado = (id, resultado) =>
   db.prepare("UPDATE picks SET resultado = ? WHERE id = ?").run(resultado, id);
 
+export const getUnsettledOfficialProps = () =>
+  db.prepare(`
+    SELECT
+      p.id, p.analysis_id, p.player, p.market, p.side, p.point, p.props_json,
+      p.fecha, p.partido, p.pick,
+      a.game_pk, a.game_date
+    FROM picks p
+    JOIN analysis_log a ON a.id = p.analysis_id
+    WHERE p.resultado IS NULL
+      AND lower(trim(p.tipo)) = 'prop oficial'
+      AND p.player IS NOT NULL
+      AND p.market IS NOT NULL
+      AND p.side IS NOT NULL
+      AND p.point IS NOT NULL
+      AND p.props_json IS NOT NULL
+      AND a.game_pk IS NOT NULL
+    ORDER BY a.game_pk, p.id
+  `).all();
+
+export const settleOfficialProp = (id, resultado) => {
+  if (!["ganó", "perdió", "push", "void"].includes(resultado)) {
+    throw new TypeError(`Resultado de prop inválido: ${resultado}`);
+  }
+  return db.prepare(`
+    UPDATE picks
+    SET resultado = @resultado
+    WHERE id = @id
+      AND resultado IS NULL
+      AND lower(trim(tipo)) = 'prop oficial'
+  `).run({ id, resultado });
+};
+
 export const insertAnalysisLog = (row) =>
   db.prepare(`
     INSERT INTO analysis_log (

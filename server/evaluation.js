@@ -24,10 +24,12 @@ export function record(picks) {
   const ps = picks ?? [];
   const ganados    = ps.filter(p => p?.resultado === "ganó").length;
   const perdidos   = ps.filter(p => p?.resultado === "perdió").length;
+  const pushes     = ps.filter(p => p?.resultado === "push").length;
+  const voids      = ps.filter(p => p?.resultado === "void").length;
   const pendientes = ps.filter(p => p?.resultado == null).length;
   const decididos  = ganados + perdidos;
   return {
-    n: ps.length, ganados, perdidos, pendientes,
+    n: ps.length, ganados, perdidos, pushes, voids, pendientes,
     winRate: decididos > 0 ? Math.round((ganados / decididos) * 1000) / 1000 : null,
   };
 }
@@ -67,6 +69,7 @@ export function roiML(officialPicks, analysesById) {
     if (corrupt) { corruptos++; continue; }
     if (price == null || unitProfit(price) == null) { sinCuota++; continue; }
     if (p.resultado == null) { pendientes++; continue; }
+    if (!["ganó", "perdió"].includes(p.resultado)) continue;
     n++;
     if (p.resultado === "ganó") { wins++; units += unitProfit(price); }
     else units -= 1;
@@ -188,6 +191,7 @@ export function buildEvaluation({ picks, analyses } = {}) {
     mlVerificado:        { ...record(officialPicks.filter(p => tipoDe(p).startsWith("moneyline"))), roiEligible: true },
     senalesRLTotal:      { ...record(senales), roiEligible: false, nota: "SEÑAL sin EV — win rate sí, ROI no" },
     propsParaRevisar:    { ...record(picks.filter(p => tipoDe(p) === "propspararevisar" || norm(p?.tipo) === "prop para revisar")), roiEligible: false, nota: "línea/cuota no verificadas" },
+    propsOficiales:      { ...record(picks.filter(p => norm(p?.tipo) === "prop oficial")), roiEligible: false, nota: "línea congelada; settlement automático desde boxscore" },
     propsLegado:         { ...record(picks.filter(p => norm(p?.tipo) === "prop")), roiEligible: false, nota: "era pre-verificación" },
     historicoSinRegistro:{ ...record(picks.filter(p => p?.analysis_id == null)), roiEligible: false, nota: "sin cuota registrada — no auditable" },
   };

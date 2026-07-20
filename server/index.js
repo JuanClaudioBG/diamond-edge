@@ -1036,9 +1036,9 @@ app.post("/api/picks", (req, res) => {
 app.patch("/api/picks/:id", (req, res) => {
   const id        = Number(req.params.id);
   const { resultado } = req.body;
-  const valid = [null, "ganó", "perdió"];
+  const valid = [null, "ganó", "perdió", "push", "void"];
   if (!valid.includes(resultado)) {
-    return res.status(400).json({ error: "resultado debe ser null, 'ganó' o 'perdió'." });
+    return res.status(400).json({ error: "resultado debe ser null, 'ganó', 'perdió', 'push' o 'void'." });
   }
   try {
     updateResultado(id, resultado);
