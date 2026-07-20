@@ -211,11 +211,11 @@ test("batterRadarDisplay: sin verificación todo sigue PROP PARA REVISAR / SOLO 
 });
 
 /* ═══ 7. Aislamiento: nada de esto entra a picks/ROI/CLV/evaluation ═══ */
-test("aislamiento F5: evaluation/settle no leen batterRadar; el radar UI no ofrece + PARLAY; index solo verifica", () => {
+test("aislamiento F5: evaluation/settle no leen batterRadar; el radar UI no ofrece + PARLAY", () => {
   const evaluation = readFileSync(new URL("../evaluation.js", import.meta.url), "utf8");
   const settle = readFileSync(new URL("../backtest/settle.js", import.meta.url), "utf8");
-  assert.ok(!/batterRadar|player-props|batter_hits/.test(evaluation), "evaluation ignora player props");
-  assert.ok(!/batterRadar|player-props|batter_hits/.test(settle), "settlement ignora player props");
+  assert.ok(!/batterRadar/.test(evaluation), "evaluation no consume el radar informativo");
+  assert.ok(!/batterRadar/.test(settle), "settlement no consume el radar informativo");
 
   const tab = readFileSync(new URL("../../src/components/AnalysisTab.jsx", import.meta.url), "utf8");
   const radarSection = tab.slice(tab.indexOf("RADAR DE BATEADORES"), tab.indexOf("Total de Carreras"));

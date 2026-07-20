@@ -14,8 +14,10 @@ function EvaluacionMoneyball({ ev }) {
   }
   const of  = ev.officialSample ?? {};
   const roi = of.roiML ?? {};
+  const roiProps = of.roiProps ?? {};
   const oa  = ev.officialAnalyses ?? {};
   const vs  = ev.byVerificationStatus ?? {};
+  const propsOficiales = vs.propsOficiales ?? {};
   const dup = ev.duplicates ?? {};
 
   return (
@@ -40,6 +42,27 @@ function EvaluacionMoneyball({ ev }) {
           Unidades ML: {fmtUnits(roi.units)} · Brier modelo {fmtBrier(oa.brier)} vs mercado {fmtBrier(oa.brierMercado)} ({oa.n ?? 0} análisis)
           {(of.n ?? 0) > 0 && of.n < 30 && <span style={{ color: "var(--au)" }}> · ⚠ n&lt;30: insuficiente para conclusiones</span>}
         </div>
+
+        {/* Props oficiales: bucket financiero independiente de Moneyline */}
+        <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--ac)", margin: "12px 0 6px", letterSpacing: 1 }}>
+          ⚾ PROPS OFICIALES · BUCKET INDEPENDIENTE
+        </div>
+        <div className="hstats" style={{ marginBottom: 6 }}>
+          {[
+            { v: fmtRecordLine(propsOficiales), l: `Récord Props (${propsOficiales.n ?? 0})`, cls: "dm" },
+            { v: fmtPct(propsOficiales.winRate), l: "Win rate Props", cls: propsOficiales.winRate >= 0.5 ? "gn" : "rd" },
+            { v: fmtRoi(roiProps.roi), l: `ROI Props (${roiProps.n ?? 0} apuestas)`, cls: (roiProps.roi ?? 0) >= 0 ? "gn" : "rd" },
+            { v: fmtUnits(roiProps.units), l: "Unidades Props", cls: (roiProps.units ?? 0) >= 0 ? "gn" : "rd" },
+          ].map(({ v, l, cls }) => (
+            <div key={l} className="hst">
+              <div className={`hst-v ${cls}`}>{v}</div>
+              <div className="hst-l">{l}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginBottom: 10 }}>
+          Push {roiProps.pushes ?? 0} · Void {roiProps.voids ?? 0} · Pendientes {roiProps.pendientes ?? 0} · Sin cuota válida {roiProps.excluidosSinCuota ?? 0}
+        </div>
         <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", marginBottom: 10 }}>
           Histórico total (contexto): {ev.overall?.n ?? 0} picks · win rate {fmtPct(ev.overall?.winRate)} — incluye picks históricos sin cuota, no auditable para ROI.
         </div>
@@ -59,6 +82,7 @@ function EvaluacionMoneyball({ ev }) {
         <div className="hbk" style={{ marginBottom: 10 }}>
           {[
             ["ML verificado (entra a ROI)", vs.mlVerificado],
+            ["Props oficiales (ROI propio)", vs.propsOficiales],
             ["Señales RL/Total (sin EV)",   vs.senalesRLTotal],
             ["Props para revisar",          vs.propsParaRevisar],
             ["Props legado",                vs.propsLegado],

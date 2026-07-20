@@ -7,12 +7,14 @@
  *    prospectivos liquidados, deduplicados al último por gamePk.
  *  - officialSample: métricas de PICKS/apuestas. Las apuestas de reanálisis
  *    supersedidos fueron reales → se cuentan, pero se marcan y reportan.
- *  - ROI oficial: SOLO Moneyline con cuota derivable del odds_json congelado.
- *    RL/Total son SEÑAL (win rate sí, ROI no). Props jamás aportan ROI.
+ *  - ROI oficial separado: Moneyline usa odds_json; Prop oficial usa su
+ *    props_json congelado. Nunca se mezclan unidades ni denominadores.
+ *    RL/Total son SEÑAL (win rate sí, ROI no).
  *  - Históricos sin analysis_id: cuentan en overall con disclaimer; sin ROI.
  */
 import { brier, logLoss, marketBrier, dedupLatest } from "./backtest/evaluate.js";
 import { unitProfit } from "./backtest/odds-math.js";
+import { findBatterPropLine } from "./player-props.js";
 
 const norm = (s) => String(s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "");
 const tipoDe = (p) => norm(p?.tipo).replace(/\s+/g, "");
@@ -59,6 +61,41 @@ export function priceForPickSide(pick, analysis) {
   return { price: out?.price ?? null, corrupt: false };
 }
 
+/* ── Cuota de Prop oficial desde SU snapshot congelado ──────────── */
+export function priceForOfficialProp(pick) {
+  if (pick?.props_json == null) return { price: null, book: null, corrupt: false };
+
+  let frozen;
+  try {
+    frozen = JSON.parse(pick.props_json);
+  } catch {
+    return { price: null, book: null, corrupt: true };
+  }
+
+  const snapshot = frozen?.payload;
+  if (!snapshot || typeof snapshot !== "object") {
+    return { price: null, book: null, corrupt: false };
+  }
+  const point = Number(pick.point);
+  if (!pick.player || !pick.market || !["Over", "Under"].includes(pick.side) || !Number.isFinite(point)) {
+    return { price: null, book: null, corrupt: false };
+  }
+
+  const found = findBatterPropLine(snapshot, {
+    marketKey: pick.market,
+    playerName: pick.player,
+  });
+  if (!found || Number(found.line) !== point) {
+    return { price: null, book: null, corrupt: false };
+  }
+  const price = pick.side === "Over" ? found.overPrice : found.underPrice;
+  return {
+    price: price != null && Number.isFinite(Number(price)) ? Number(price) : null,
+    book: found.book ?? null,
+    corrupt: false,
+  };
+}
+
 /* ── ROI oficial: SOLO Moneyline, cuota congelada, resultado decidido ── */
 export function roiML(officialPicks, analysesById) {
   const ml = (officialPicks ?? []).filter(p => tipoDe(p).startsWith("moneyline"));
@@ -79,6 +116,47 @@ export function roiML(officialPicks, analysesById) {
     units: Math.round(units * 100) / 100,
     roi: n > 0 ? Math.round((units / n) * 1000) / 1000 : null,
     excluidosSinCuota: sinCuota, corruptos, pendientes,
+  };
+}
+
+/* ── ROI oficial de Props: bucket independiente de Moneyline ────── */
+export function roiOfficialProps(picks) {
+  const props = (picks ?? []).filter(p => norm(p?.tipo) === "prop oficial");
+  let n = 0, wins = 0, losses = 0, units = 0;
+  let pushes = 0, voids = 0, pendientes = 0, sinCuota = 0, corruptos = 0;
+
+  for (const p of props) {
+    if (p.resultado == null) { pendientes++; continue; }
+    if (p.resultado === "push") { pushes++; continue; }
+    if (p.resultado === "void") { voids++; continue; }
+    if (!["ganó", "perdió"].includes(p.resultado)) continue;
+
+    const { price, corrupt } = priceForOfficialProp(p);
+    if (corrupt) { corruptos++; continue; }
+    const profit = unitProfit(price);
+    if (price == null || profit == null) { sinCuota++; continue; }
+
+    n++;
+    if (p.resultado === "ganó") {
+      wins++;
+      units += profit;
+    } else {
+      losses++;
+      units -= 1;
+    }
+  }
+
+  return {
+    n,
+    wins,
+    losses,
+    pushes,
+    voids,
+    pendientes,
+    units: Math.round(units * 100) / 100,
+    roi: n > 0 ? Math.round((units / n) * 1000) / 1000 : null,
+    excluidosSinCuota: sinCuota,
+    corruptos,
   };
 }
 
@@ -154,6 +232,18 @@ export function buildEvaluation({ picks, analyses } = {}) {
     return !!a && a.retro === 0 && a.logic_version != null && a.odds_json != null;
   });
 
+  /* Props oficiales tienen su propia elegibilidad: su fuente de precio es
+     props_json, no el snapshot general odds_json de ML/RL/Total. */
+  const officialPropCandidates = picks.filter(p => {
+    if (norm(p?.tipo) !== "prop oficial" || p?.analysis_id == null || p?.props_json == null) return false;
+    const a = analysesById.get(p.analysis_id);
+    return !!a && a.retro === 0 && a.logic_version != null;
+  });
+  const officialPropPicks = officialPropCandidates.filter(p => {
+    const { price, corrupt } = priceForOfficialProp(p);
+    return !corrupt && price != null && unitProfit(price) != null;
+  });
+
   /* Reanálisis: el último análisis por gamePk define la vista oficial de
      MODELO; las apuestas de análisis supersedidos se cuentan pero se marcan */
   const prospective = analyses.filter(a => a?.retro === 0);
@@ -172,6 +262,7 @@ export function buildEvaluation({ picks, analyses } = {}) {
   };
 
   const roi = roiML(officialPicks, analysesById);
+  const roiProps = roiOfficialProps(officialPropCandidates);
   const discrepancias = resultDiscrepancies(officialPicks, analysesById);
   const duplicates = {
     exactos: findExactDuplicates(picks),
@@ -181,8 +272,10 @@ export function buildEvaluation({ picks, analyses } = {}) {
 
   const officialSample = {
     criteria: "analysis_id + retro=0 + logic_version + odds_json",
+    criteriaProps: "tipo=Prop oficial + analysis_id + retro=0 + logic_version + props_json",
     ...record(officialPicks),
     roiML: roi,
+    roiProps,
     supersededIncluidos: supersededPicks.length,
   };
 
@@ -191,7 +284,7 @@ export function buildEvaluation({ picks, analyses } = {}) {
     mlVerificado:        { ...record(officialPicks.filter(p => tipoDe(p).startsWith("moneyline"))), roiEligible: true },
     senalesRLTotal:      { ...record(senales), roiEligible: false, nota: "SEÑAL sin EV — win rate sí, ROI no" },
     propsParaRevisar:    { ...record(picks.filter(p => tipoDe(p) === "propspararevisar" || norm(p?.tipo) === "prop para revisar")), roiEligible: false, nota: "línea/cuota no verificadas" },
-    propsOficiales:      { ...record(picks.filter(p => norm(p?.tipo) === "prop oficial")), roiEligible: false, nota: "línea congelada; settlement automático desde boxscore" },
+    propsOficiales:      { ...record(officialPropPicks), roiEligible: true, roi: roiProps, nota: "bucket independiente; cuota congelada en props_json" },
     propsLegado:         { ...record(picks.filter(p => norm(p?.tipo) === "prop")), roiEligible: false, nota: "era pre-verificación" },
     historicoSinRegistro:{ ...record(picks.filter(p => p?.analysis_id == null)), roiEligible: false, nota: "sin cuota registrada — no auditable" },
   };
@@ -213,6 +306,9 @@ export function buildEvaluation({ picks, analyses } = {}) {
   if (supersededPicks.length > 0) w("info", `${supersededPicks.length} picks provienen de análisis supersedidos: cuentan como apuestas reales, marcados en duplicates.supersededPicks.`);
   if (discrepancias.length > 0) w("warning", `${discrepancias.length} discrepancias entre resultado manual del pick y settle del análisis — revisar a mano, no se resuelven en silencio.`);
   if (roi.corruptos > 0) w("warning", `${roi.corruptos} odds_json corruptos excluidos del ROI.`);
+  if (roiProps.corruptos > 0) w("warning", `${roiProps.corruptos} props_json corruptos excluidos del ROI de props.`);
+  if (roiProps.excluidosSinCuota > 0) w("warning", `${roiProps.excluidosSinCuota} props oficiales sin cuota exacta verificable excluidos de su ROI.`);
+  if (roiProps.n > 0 && roiProps.n < OFFICIAL_MIN_N) w("warning", `Muestra de props oficiales n=${roiProps.n} < ${OFFICIAL_MIN_N}: insuficiente para conclusiones.`);
   if (officialSample.n > 0 && officialSample.n < OFFICIAL_MIN_N) w("warning", `Muestra oficial n=${officialSample.n} < ${OFFICIAL_MIN_N}: insuficiente para conclusiones.`);
 
   return {
