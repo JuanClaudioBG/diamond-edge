@@ -15,7 +15,12 @@ db.exec(`
     valor          TEXT,
     riesgo         TEXT,
     resultado      TEXT DEFAULT NULL,
-    fecha_creacion TEXT NOT NULL DEFAULT (datetime('now'))
+    fecha_creacion TEXT NOT NULL DEFAULT (datetime('now')),
+    player         TEXT DEFAULT NULL,
+    market         TEXT DEFAULT NULL,
+    side           TEXT DEFAULT NULL CHECK (side IS NULL OR side IN ('Over', 'Under')),
+    point          REAL DEFAULT NULL,
+    props_json     TEXT DEFAULT NULL
   )
 `);
 
@@ -50,16 +55,52 @@ db.exec(`
 
 /* Migraciones retrocompatibles (ALTER falla silenciosamente si ya existe) */
 try { db.exec("ALTER TABLE picks ADD COLUMN analysis_id INTEGER"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE picks ADD COLUMN player TEXT DEFAULT NULL"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE picks ADD COLUMN market TEXT DEFAULT NULL"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE picks ADD COLUMN side TEXT DEFAULT NULL CHECK (side IS NULL OR side IN ('Over', 'Under'))"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE picks ADD COLUMN point REAL DEFAULT NULL"); } catch { /* ya existe */ }
+try { db.exec("ALTER TABLE picks ADD COLUMN props_json TEXT DEFAULT NULL"); } catch { /* ya existe */ }
 try { db.exec("ALTER TABLE analysis_log ADD COLUMN odds_fetched_at TEXT"); } catch { /* ya existe */ }
 
 export const getAllPicks = () =>
   db.prepare("SELECT * FROM picks ORDER BY fecha_creacion DESC").all();
 
-export const insertPick = ({ fecha, partido, tipo, pick, valor, riesgo, analysis_id = null }) =>
+export const insertPick = ({
+  fecha,
+  partido,
+  tipo,
+  pick,
+  valor,
+  riesgo,
+  analysis_id = null,
+  player = null,
+  market = null,
+  side = null,
+  point = null,
+  props_json = null,
+}) =>
   db.prepare(`
-    INSERT INTO picks (fecha, partido, tipo, pick, valor, riesgo, analysis_id)
-    VALUES (@fecha, @partido, @tipo, @pick, @valor, @riesgo, @analysis_id)
-  `).run({ fecha, partido, tipo, pick, valor, riesgo, analysis_id });
+    INSERT INTO picks (
+      fecha, partido, tipo, pick, valor, riesgo, analysis_id,
+      player, market, side, point, props_json
+    ) VALUES (
+      @fecha, @partido, @tipo, @pick, @valor, @riesgo, @analysis_id,
+      @player, @market, @side, @point, @props_json
+    )
+  `).run({
+    fecha,
+    partido,
+    tipo,
+    pick,
+    valor,
+    riesgo,
+    analysis_id,
+    player,
+    market,
+    side,
+    point,
+    props_json,
+  });
 
 export const updateResultado = (id, resultado) =>
   db.prepare("UPDATE picks SET resultado = ? WHERE id = ?").run(resultado, id);

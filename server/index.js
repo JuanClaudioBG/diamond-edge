@@ -13,6 +13,7 @@ import { getStrikeoutRadar } from "./radar.js";
 import { buildBatterRadar } from "./batter-radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
 import { fetchEventBatterProps, verifyBatterRadarLines } from "./player-props.js";
+import { freezePropsSnapshot, insertSelectedPropCandidates } from "./official-props.js";
 
 dotenv.config();
 
@@ -806,6 +807,9 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       .join("");
 
     const analysis = JSON.parse(txt.replace(/```json|```/g, "").trim());
+    /* Punto de integración para una selección explícita futura. Esta lista es
+       propiedad del servidor y NO se alimenta del LLM ni del Batter Radar. */
+    const selectedPropCandidates = [];
 
     /* ── Verificación de picks contra el snapshot de odds (en código):
        RL/Total solo con cuota exacta del mismo lado; props → "para revisar" ── */
@@ -930,14 +934,19 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
        endpoint POR EVENTO de The Odds API. SOLO verificación informativa:
        matching exacto jugador/mercado/point; sin picks oficiales, sin EV,
        sin ROI/CLV. Cualquier fallo deja el radar tal cual. ── */
+    let propsSnapshot = null;
+    let frozenPropsJson = null;
     try {
-      if (analysis.batterRadar && oddsGame?.id) {
-        const propsSnapshot = await fetchEventBatterProps({
+      if (oddsGame?.id) {
+        propsSnapshot = await fetchEventBatterProps({
           eventId: oddsGame.id,
           apiKey: process.env.ODDS_API_KEY,
         });
         if (propsSnapshot) {
-          analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
+          frozenPropsJson = freezePropsSnapshot(propsSnapshot, { eventId: oddsGame.id });
+          if (analysis.batterRadar) {
+            analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
+          }
         }
       }
     } catch (propsErr) {
@@ -973,7 +982,22 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
         }),
         output_json:      JSON.stringify(analysis),
       });
-      analysis.analysisId = Number(logResult.lastInsertRowid);
+      const analysisId = Number(logResult.lastInsertRowid);
+      analysis.analysisId = analysisId;
+
+      /* Hook Fase 1: solo persiste candidatos marcados selected:true por un
+         selector explícito del servidor. La colección está vacía por defecto;
+         nunca convierte automáticamente el radar o el output del LLM. */
+      const officialPropPickIds = insertSelectedPropCandidates({
+        candidates: selectedPropCandidates,
+        propsSnapshot,
+        propsJson: frozenPropsJson,
+        analysisId,
+        fecha: gameDate ? String(gameDate).slice(0, 10) : new Date().toISOString().slice(0, 10),
+        partido: `${a.team.name} @ ${h.team.name}`,
+        insertPickFn: insertPick,
+      });
+      if (officialPropPickIds.length) analysis.officialPropPickIds = officialPropPickIds;
     } catch (logErr) {
       console.error("[Log] Error registrando análisis:", logErr.message);
     }
