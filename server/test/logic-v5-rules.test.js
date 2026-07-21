@@ -1,5 +1,5 @@
 /*
- * Fase 2 de 2026-07-02.5 — regresión sobre el texto del prompt y la versión.
+ * Reglas del prompt y versionado — regresión de contratos estratégicos.
  * Estos tests leen server/index.js como fuente: si alguien borra o invierte
  * una regla, la suite falla.
  */
@@ -9,11 +9,23 @@ import { readFileSync } from "fs";
 
 const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 
-test("LOGIC_VERSION es 2026-07-02.5 con historial documentado", () => {
-  assert.match(src, /const LOGIC_VERSION = "2026-07-02\.5"/);
+test("LOGIC_VERSION es 2026-07-21.6 con historial documentado", () => {
+  assert.match(src, /const LOGIC_VERSION = "2026-07-21\.6"/);
   assert.match(src, /\.5 = Statcast ofensivo real/, "el historial del bump debe estar documentado");
+  assert.match(src, /\.6 = Totales requieren 4\/4 para señal alta/, "el cambio estratégico debe quedar documentado");
   const definitions = src.match(/const LOGIC_VERSION =/g);
   assert.equal(definitions.length, 1, "una sola definición de LOGIC_VERSION");
+});
+
+test("prompt: Totales requieren 4/4; con menos bajan a BAJO y llevan ambas notas", () => {
+  assert.match(src, /ÚNICAMENTE si se cumplen 4 de 4 factores puedes usar "ALTO"/);
+  assert.match(src, /Si se cumplen 0, 1, 2 o 3 factores, usa OBLIGATORIAMENTE "BAJO"/);
+  assert.match(src, /no uses "MEDIO"/);
+  assert.match(src, /⚠️ Total con incertidumbre alta — no recomendado para parlay/);
+  assert.match(src, /Este pick es referencial — la estrategia óptima del sistema favorece Props de pitchers y Moneylines correlacionados sobre Totales con incertidumbre/);
+  assert.match(src, /solo 4 factores plenamente cumplidos satisfacen la regla de 4\/4/);
+  assert.doesNotMatch(src, /Si se cumplen 3 o 4 factores/);
+  assert.doesNotMatch(src, /Si se cumplen menos de 3/);
 });
 
 test("prompt: reglas explícitas de LOB% en ambas direcciones, sin certezas", () => {
@@ -65,7 +77,18 @@ test("esquema: totalCarreras.proyectado presente con estimado como alias compati
 });
 
 test("prompt: props de K de abridores remiten al Radar, sin pick oficial sin línea", () => {
-  assert.match(src, /Radar de Ponches con game logs reales: NO los conviertas en pick Prop/);
-  assert.match(src, /revisar en Radar de Ponches/);
+  assert.match(src, /se validan posteriormente en el Radar de Ponches/);
+  assert.match(src, /componente estratégico sin point ni cuota/);
+  assert.match(src, /no debes convertirlos aquí en un pick Prop oficial/);
   assert.match(src, /Ningún prop se vuelve pick oficial sin línea y cuota verificadas/);
+});
+
+test("prompt: pitcher dominante prioriza parlay correlacionado ML + Over Ks con guardas", () => {
+  assert.match(src, /REGLA DE CORRELACIÓN PITCHER DOMINANTE/);
+  assert.match(src, /simultáneamente xERA bajo, Whiff% alto y K\/9 alto/);
+  assert.match(src, /después de aplicar la REGLA DE SOPORTE OFENSIVO/);
+  assert.match(src, /Moneyline del equipo \+ Over Ks del mismo pitcher/);
+  assert.match(src, /Parlay correlacionado prioritario: \[Equipo\] Moneyline \+ Over Ks de \[Pitcher\] — validar línea y cuota en Radar de Ponches/);
+  assert.match(src, /No inventes point ni cuota del Over Ks/);
+  assert.match(src, /Si la ofensiva no respalda el Moneyline, no fuerces la correlación/);
 });

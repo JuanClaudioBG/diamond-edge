@@ -30,8 +30,10 @@ dotenv.config();
    con mercado oficial, total proyectado separado de línea real, bloqueo de
    rankings no verificados, props de K de abridores remitidos al Radar.
    Enforcement de consistencia de salida: ML sin valor con EV≤0, dirección
-   del total y comparaciones métricas — misma .5 (solo post-proceso). */
-const LOGIC_VERSION = "2026-07-02.5";
+   del total y comparaciones métricas — misma .5 (solo post-proceso) ·
+   .6 = Totales requieren 4/4 para señal alta, nota estratégica obligatoria
+   con incertidumbre y prioridad de parlay correlacionado ML + Over Ks. */
+const LOGIC_VERSION = "2026-07-21.6";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -743,20 +745,25 @@ REGLAS PARA RUN LINE:
 Si el bullpen del equipo favorito tiene ERA > 4.50 → añade "⚠️ Bullpen frágil — riesgo Run Line" en el campo razon del pick de Run Line correspondiente.
 
 REGLAS PARA PICKS DE TOTAL (OVER/UNDER):
-Evalúa estos 4 factores antes de asignar valor a un Total:
+Evalúa estos 4 factores antes de asignar señal a un Total:
   1. xERA confirma ERA real de AMBOS pitchers (diferencia < 1.0 en cada uno)
   2. Clima sin viento superior a 20 km/h, o estadio con techo
   3. Lineup confirmado de ambos equipos (no vacío en MATCHUPS INDIVIDUALES)
   4. Convergencia entre Statcast de bateadores (xwOBA, barrel%) y el perfil del pitcher rival
-Si se cumplen 3 o 4 factores → puedes marcar el Total como VALOR ALTO.
-Si se cumplen menos de 3 → máximo VALOR MEDIO, y añade "⚠️ Total con incertidumbre alta" en el campo razon del pick.
-Al reportar los factores usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido: solo los factores plenamente cumplidos suman para la regla de 3 (nunca describas 2 cumplidos + 1 parcial como "3 de 4 factores cumplidos").
+ÚNICAMENTE si se cumplen 4 de 4 factores puedes usar "ALTO" en el campo valor; el servidor lo mostrará como SEÑAL ALTA.
+Si se cumplen 0, 1, 2 o 3 factores, usa OBLIGATORIAMENTE "BAJO" en el campo valor; no uses "MEDIO". Incluye textualmente en razon: "⚠️ Total con incertidumbre alta — no recomendado para parlay. Este pick es referencial — la estrategia óptima del sistema favorece Props de pitchers y Moneylines correlacionados sobre Totales con incertidumbre".
+Al reportar los factores usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido: solo 4 factores plenamente cumplidos satisfacen la regla de 4/4.
 
 REGLA DE CUOTAS EXACTAS (obligatoria):
-Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en estos datos: nunca escribas una línea numérica estimada; describe el prop cualitativamente y su justificación. Los ángulos de strikeouts de ABRIDORES ya los cubre el Radar de Ponches con game logs reales: NO los conviertas en pick Prop; si detectas uno, menciónalo breve en factoresClave como "ángulo de ponches del abridor — revisar en Radar de Ponches". Ningún prop se vuelve pick oficial sin línea y cuota verificadas.
+Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en los datos enviados a este prompt: nunca escribas una línea numérica ni una cuota estimada. Ningún prop se vuelve pick oficial sin línea y cuota verificadas. Los ángulos de strikeouts de ABRIDORES se validan posteriormente en el Radar de Ponches; puedes recomendarlos como componente estratégico sin point ni cuota, pero no debes convertirlos aquí en un pick Prop oficial.
 
 REGLA DE SOPORTE OFENSIVO:
 Si el pitcher abridor tiene métricas dominantes (xERA bajo, K/9 alto) PERO su equipo tiene ofensiva débil en temporada (OPS por debajo de .700 o entre los peores del partido), NO asumas automáticamente que el dominio del pitcher se traduce en victoria del equipo. Separa el análisis: "el pitcher puede ganar el duelo individual" vs "el equipo puede ganar el partido". En estos casos, el Moneyline del equipo con el pitcher dominante debe bajar de confianza si su ofensiva no respalda, incluso si el pitcheo se ve favorable.
+
+REGLA DE CORRELACIÓN PITCHER DOMINANTE:
+Si un mismo abridor presenta simultáneamente xERA bajo, Whiff% alto y K/9 alto en los datos del duelo, y el Moneyline de su equipo también queda respaldado después de aplicar la REGLA DE SOPORTE OFENSIVO, prioriza recomendar la combinación correlacionada Moneyline del equipo + Over Ks del mismo pitcher sobre un Total incierto o sobre ambos picks presentados como ángulos independientes.
+Incluye en factoresClave: "Parlay correlacionado prioritario: [Equipo] Moneyline + Over Ks de [Pitcher] — validar línea y cuota en Radar de Ponches".
+No inventes point ni cuota del Over Ks y no lo agregues como pick Prop oficial desde este prompt. Si la ofensiva no respalda el Moneyline, no fuerces la correlación: conserva únicamente el ángulo de ponches para revisión en el Radar.
 
 PROBABILIDAD Y VALOR:
 Emite tu probabilidad de victoria del equipo LOCAL como número 0-100 en el campo probLocal (obligatorio). Sé honesto: si el partido es parejo, di 50-55, no exageres. El valor esperado contra el mercado se calcula fuera del modelo con tu probLocal — NO calcules EV tú mismo ni inventes probabilidades de mercado. Usa LÍNEAS DE MERCADO solo como referencia de qué espera el consenso: si tu lectura difiere mucho del mercado, explica POR QUÉ en factoresClave (el mercado suele tener razón).
