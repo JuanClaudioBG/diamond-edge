@@ -119,10 +119,19 @@ html,body,#root{height:100%;background:var(--bg);color:var(--tx);font-family:var
 .pv.MEDIO{background:rgba(255,215,64,.12);color:var(--au)}
 .pv.BAJO{background:rgba(255,61,90,.1);color:var(--rd)}
 .pv.NOOF{background:rgba(160,160,160,.12);color:var(--mu)}
+.pv.RADAR{background:rgba(0,188,212,.14);color:var(--cy);border:1px solid rgba(0,188,212,.25)}
 .pick-tx{font-size:14px;font-weight:600;color:var(--tx);margin-bottom:3px}
 .pick-rs{font-size:11px;color:var(--dm);line-height:1.4;padding-bottom:22px}
 .padd{position:absolute;right:10px;bottom:8px;padding:3px 9px;background:transparent;border:1px solid var(--au);color:var(--au);font-family:var(--fm);font-size:8px;letter-spacing:1px;cursor:pointer;border-radius:2px;transition:all .15s}
 .padd:hover{background:var(--au);color:var(--bg)}
+.pick.radar-angle{border-color:rgba(0,188,212,.4);border-left:3px solid var(--cy);background:linear-gradient(90deg,rgba(0,188,212,.08),var(--s2) 45%)}
+.radar-angle-type{color:var(--cy)}
+.radar-angle-heading,.pick-divider{font-family:var(--fm);font-size:8px;letter-spacing:1.2px;text-transform:uppercase;color:var(--cy);margin:0 0 7px}
+.pick-divider{color:var(--mu);border-top:1px solid var(--b1);padding-top:9px;margin-top:10px}
+.radar-angle-meta{font-family:var(--fm);font-size:9px;color:var(--cy);margin:2px 0 4px}
+.radar-angle-note{font-family:var(--fm);font-size:9px;color:var(--mu);padding:0 70px 0 0}
+.padd.radar-add{border-color:var(--cy);color:var(--cy)}
+.padd.radar-add:hover{background:var(--cy);color:var(--bg)}
 /* Parlay */
 .pcont{padding:14px}
 .pmt{text-align:center;padding:40px 20px;color:var(--dm)}

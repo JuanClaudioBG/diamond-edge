@@ -145,6 +145,13 @@ export default function DiamondEdge() {
     } catch(e) { console.error("Error guardando pick:", e); }
   };
 
+  /* Los ÁNGULOS RADAR son efímeros: participan en el parlay, pero no se
+     persisten ni entran al historial, settlement o ROI oficial. */
+  const addSuggestedPick = (pick) => {
+    const partido = `${sel.teams.away.team.name} @ ${sel.teams.home.team.name}`;
+    setParlay(p => [...p, { id: Date.now(), game: partido, ...pick }]);
+  };
+
   const rmPick = (id) => setParlay(p => p.filter(x => x.id !== id));
 
   const marcarResultado = async (id, resultado) => {
@@ -221,7 +228,7 @@ export default function DiamondEdge() {
             ) : (
               <>
                 {tab === "stats"    && <StatsTab    gd={gd} onAnalyze={doAnalyze} setTab={setTab} analysis={analysis} analyzing={analyzing} />}
-                {tab === "analysis" && <AnalysisTab analysis={analysis} analyzing={analyzing} onAnalyze={doAnalyze} onAddPick={addPick} />}
+                {tab === "analysis" && <AnalysisTab analysis={analysis} analyzing={analyzing} onAnalyze={doAnalyze} onAddPick={addPick} onAddSuggestedPick={addSuggestedPick} />}
                 {tab === "parlay"   && <ParlayTab   parlay={parlay} onRemovePick={rmPick} />}
               </>
             )}

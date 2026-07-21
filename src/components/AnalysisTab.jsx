@@ -1,7 +1,7 @@
 import { advCls, advLbl } from "../utils";
 import { totalDisplay, isStarterKPropCoveredByRadar, pickBadge, batterRadarDisplay } from "../analysis-display";
 
-export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick }) {
+export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick, onAddSuggestedPick }) {
   if (analyzing) return <div className="ld"><span className="sp" />ANALIZANDO CON IA…</div>;
 
   if (!analysis) return (
@@ -255,6 +255,7 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
 
       {(() => {
         const all      = analysis.picks ?? [];
+        const suggested = analysis.suggestedPicks ?? [];
         const oficiales = all.filter(pk => pk.tipo !== "Prop para revisar");
         const revisarTodos = all.filter(pk => pk.tipo === "Prop para revisar");
         /* Dedupe VISUAL: props de K de abridores con tarjeta de Radar visible
@@ -285,12 +286,38 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick 
             </div>
           );
         };
+        const SuggestedPick = ({ pk }) => (
+          <div className="pick radar-angle">
+            <div className="pick-top">
+              <span className="pick-tp radar-angle-type">PROP SUGERIDO</span>
+              <span className="pv RADAR">ÁNGULO RADAR</span>
+            </div>
+            <div className="pick-tx">
+              {pk.pick}
+              <span style={{ color: "var(--cy)", fontFamily: "var(--fm)", fontSize: 12 }}> · cuota real {fmtCuota(pk.cuotaReal)}</span>
+            </div>
+            <div className="radar-angle-meta">
+              Score {pk.score}/10 · {pk.book}{pk.lineupSlot ? ` · turno #${pk.lineupSlot}` : ""}
+            </div>
+            <div className="pick-rs">{pk.razon}</div>
+            <div className="radar-angle-note">Sugerencia informativa · no entra a ROI oficial.</div>
+            <button className="padd radar-add" onClick={() => onAddSuggestedPick?.(pk)}>+ PARLAY</button>
+          </div>
+        );
         return (
           <>
             <div className="acard">
               <div className="acard-hdr">💰 Picks y Señales</div>
               <div className="acard-b">
+                {suggested.length > 0 && (
+                  <div className="radar-angle-heading">Ángulos Radar con línea verificada</div>
+                )}
+                {suggested.map(pk => <SuggestedPick key={pk.suggestionKey} pk={pk} />)}
+                {suggested.length > 0 && oficiales.length > 0 && <div className="pick-divider">Picks del análisis principal</div>}
                 {oficiales.map((pk, i) => <Pick key={i} pk={pk} />)}
+                {suggested.length === 0 && oficiales.length === 0 && (
+                  <div style={{ color: "var(--mu)", fontFamily: "var(--fm)", fontSize: 10 }}>Sin picks con línea verificada.</div>
+                )}
               </div>
             </div>
             {(revisar.length > 0 || cubiertos.length > 0) && (

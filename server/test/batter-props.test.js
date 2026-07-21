@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "fs";
 import {
-  BATTER_PROP_MARKETS, normPlayerName, findBatterPropLine,
-  verifyBatterRadarLines, fetchEventBatterProps, _clearPropsCache,
+  BATTER_PROP_MARKETS, RADAR_PROP_MARKETS, normPlayerName, findBatterPropLine,
+  verifyBatterRadarLines, fetchEventBatterProps, fetchEventRadarProps, _clearPropsCache,
 } from "../player-props.js";
 import { batterRadarDisplay } from "../../src/analysis-display.js";
 
@@ -179,6 +179,21 @@ test("fetchEventBatterProps: sin eventId o apiKey → null sin llamar a la red; 
   _clearPropsCache();
 });
 
+test("fetchEventRadarProps solicita bateadores y pitcher_strikeouts en un solo snapshot", async () => {
+  _clearPropsCache();
+  let requestedUrl = null;
+  const fetcher = async (url) => {
+    requestedUrl = url;
+    return { ok: true, json: async () => ({ id: "radar-event", bookmakers: [] }) };
+  };
+  const result = await fetchEventRadarProps({ eventId: "radar-event", apiKey: "secret", fetcher });
+  assert.equal(result.id, "radar-event");
+  const markets = new URL(requestedUrl).searchParams.get("markets").split(",");
+  assert.deepEqual(markets, Object.values(RADAR_PROP_MARKETS));
+  assert.ok(markets.includes("pitcher_strikeouts"));
+  _clearPropsCache();
+});
+
 /* ═══ 6. UI: líneas verificadas sin + PARLAY ni VALOR ═══ */
 test("batterRadarDisplay: mercado verificado muestra línea y cuotas de referencia; HR/RBI cautelosos; sin VALOR", () => {
   const radar = verifyBatterRadarLines(mkRadar(), snapshot([
@@ -236,5 +251,9 @@ test("BATTER_PROP_MARKETS mapea exactamente los 4 mercados esperados de The Odds
     totalBases: "batter_total_bases",
     homeRuns: "batter_home_runs",
     rbi: "batter_rbis",
+  });
+  assert.deepEqual(RADAR_PROP_MARKETS, {
+    ...BATTER_PROP_MARKETS,
+    pitcherStrikeouts: "pitcher_strikeouts",
   });
 });

@@ -12,8 +12,9 @@ import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTo
 import { getStrikeoutRadar } from "./radar.js";
 import { buildBatterRadar } from "./batter-radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
-import { fetchEventBatterProps, verifyBatterRadarLines } from "./player-props.js";
+import { fetchEventRadarProps, verifyBatterRadarLines } from "./player-props.js";
 import { freezePropsSnapshot, insertSelectedPropCandidates } from "./official-props.js";
+import { buildRadarSuggestedPicks } from "./radar-suggestions.js";
 
 dotenv.config();
 
@@ -32,8 +33,10 @@ dotenv.config();
    Enforcement de consistencia de salida: ML sin valor con EV≤0, dirección
    del total y comparaciones métricas — misma .5 (solo post-proceso) ·
    .6 = Totales requieren 4/4 para señal alta, nota estratégica obligatoria
-   con incertidumbre y prioridad de parlay correlacionado ML + Over Ks. */
-const LOGIC_VERSION = "2026-07-21.6";
+   con incertidumbre y prioridad de parlay correlacionado ML + Over Ks ·
+   .7 = picks sugeridos no oficiales desde Radar de Bateadores/Ponches,
+   con línea real y canal de parlay aislado del ROI. */
+const LOGIC_VERSION = "2026-07-21.7";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -881,6 +884,25 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       ? { home: hFatigue, away: aFatigue }
       : null;
 
+    /* ── Snapshot unificado de props por evento: bateadores + ponches.
+       Es la única fuente de líneas/cuotas para ambos Radares. Se congela
+       para el hook oficial existente, pero no convierte sugerencias en picks. */
+    let propsSnapshot = null;
+    let frozenPropsJson = null;
+    try {
+      if (oddsGame?.id) {
+        propsSnapshot = await fetchEventRadarProps({
+          eventId: oddsGame.id,
+          apiKey: process.env.ODDS_API_KEY,
+        });
+        if (propsSnapshot) {
+          frozenPropsJson = freezePropsSnapshot(propsSnapshot, { eventId: oddsGame.id });
+        }
+      }
+    } catch (propsErr) {
+      console.error("[RadarProps] Error:", propsErr.message);
+    }
+
     /* ── Radar de Ponches: informativo, calculado en código con game logs
        reales. NO entra al prompt (cero cambio de modelo), ni a ROI/CLV. ── */
     try {
@@ -895,12 +917,12 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       const [aRadar, hRadar] = await Promise.all([
         a.prob?.id ? getStrikeoutRadar({
           pitcherId: a.prob.id, name: aName, seasonStats: a.ps,
-          savantRow: aSavant, fgRow: aFG, oddsGame,
+          savantRow: aSavant, fgRow: aFG, oddsGame: propsSnapshot ?? oddsGame,
           rival: { teamName: h.team.name, kPct: teamKPct(h.hit), lineupConfirmed: hOrder.length > 0 },
         }) : Promise.resolve(null),
         h.prob?.id ? getStrikeoutRadar({
           pitcherId: h.prob.id, name: hName, seasonStats: h.ps,
-          savantRow: hSavant, fgRow: hFG, oddsGame,
+          savantRow: hSavant, fgRow: hFG, oddsGame: propsSnapshot ?? oddsGame,
           rival: { teamName: a.team.name, kPct: teamKPct(a.hit), lineupConfirmed: aOrder.length > 0 },
         }) : Promise.resolve(null),
       ]);
@@ -937,28 +959,16 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       };
     }
 
-    /* ── F5: líneas reales de player props para el Batter Radar, desde el
-       endpoint POR EVENTO de The Odds API. SOLO verificación informativa:
-       matching exacto jugador/mercado/point; sin picks oficiales, sin EV,
-       sin ROI/CLV. Cualquier fallo deja el radar tal cual. ── */
-    let propsSnapshot = null;
-    let frozenPropsJson = null;
-    try {
-      if (oddsGame?.id) {
-        propsSnapshot = await fetchEventBatterProps({
-          eventId: oddsGame.id,
-          apiKey: process.env.ODDS_API_KEY,
-        });
-        if (propsSnapshot) {
-          frozenPropsJson = freezePropsSnapshot(propsSnapshot, { eventId: oddsGame.id });
-          if (analysis.batterRadar) {
-            analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
-          }
-        }
-      }
-    } catch (propsErr) {
-      console.error("[BatterProps] Error:", propsErr.message);
+    if (analysis.batterRadar && propsSnapshot) {
+      analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
     }
+
+    /* Sugerencias calculadas en servidor y guardadas solo en output_json.
+       Nunca se agregan a analysis.picks ni a selectedPropCandidates. */
+    analysis.suggestedPicks = buildRadarSuggestedPicks({
+      batterRadar: analysis.batterRadar,
+      radar: analysis.radar,
+    });
 
     /* ── Registro para backtest (ver docs/BACKTEST_METHODOLOGY.md) ── */
     try {

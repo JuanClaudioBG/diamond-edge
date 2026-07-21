@@ -1,6 +1,6 @@
 /*
- * Player Props (F5) — verificación de líneas reales de bateador contra
- * The Odds API, SOLO informativa para el Batter Radar.
+ * Player Props — snapshot y verificación de líneas reales de Radar contra
+ * The Odds API, SOLO informativa para Batter Radar / Radar de Ponches.
  *
  * Contrato F5:
  *  - No crea picks oficiales, no calcula EV, no entra a ROI/CLV ni a la
@@ -19,6 +19,11 @@ export const BATTER_PROP_MARKETS = {
   totalBases: "batter_total_bases",
   homeRuns:   "batter_home_runs",
   rbi:        "batter_rbis",
+};
+
+export const RADAR_PROP_MARKETS = {
+  ...BATTER_PROP_MARKETS,
+  pitcherStrikeouts: "pitcher_strikeouts",
 };
 
 const PREFERRED_BOOKS = ["draftkings", "fanduel", "betmgm"];
@@ -144,12 +149,12 @@ export function verifyBatterRadarLines(batterRadar, eventOdds) {
  * Sin eventId o sin apiKey → null sin red. Respuesta no-OK o inválida →
  * null (jamás se inventan líneas). fetcher inyectable para tests.
  */
-export async function fetchEventBatterProps({ eventId, apiKey, fetcher = fetch } = {}) {
+export async function fetchEventRadarProps({ eventId, apiKey, fetcher = fetch } = {}) {
   if (!eventId || !apiKey) return null;
   const cached = propsCache.get(eventId);
   if (cached && Date.now() - cached.fetchedAt < PROPS_TTL_MS) return cached.data;
 
-  const markets = Object.values(BATTER_PROP_MARKETS).join(",");
+  const markets = Object.values(RADAR_PROP_MARKETS).join(",");
   try {
     const r = await fetcher(
       `${EVENT_ODDS_BASE}/${eventId}/odds?apiKey=${apiKey}&regions=us&markets=${markets}&oddsFormat=american`
@@ -163,6 +168,10 @@ export async function fetchEventBatterProps({ eventId, apiKey, fetcher = fetch }
     return cached?.data ?? null;
   }
 }
+
+/* Alias retrocompatible para consumidores de F5. El snapshot ahora incluye
+   también pitcher_strikeouts, sin cambiar el contrato de retorno. */
+export const fetchEventBatterProps = fetchEventRadarProps;
 
 /** Solo para tests: limpia la caché por evento. */
 export function _clearPropsCache() {

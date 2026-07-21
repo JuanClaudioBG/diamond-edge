@@ -9,10 +9,11 @@ import { readFileSync } from "fs";
 
 const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 
-test("LOGIC_VERSION es 2026-07-21.6 con historial documentado", () => {
-  assert.match(src, /const LOGIC_VERSION = "2026-07-21\.6"/);
+test("LOGIC_VERSION es 2026-07-21.7 con historial documentado", () => {
+  assert.match(src, /const LOGIC_VERSION = "2026-07-21\.7"/);
   assert.match(src, /\.5 = Statcast ofensivo real/, "el historial del bump debe estar documentado");
   assert.match(src, /\.6 = Totales requieren 4\/4 para señal alta/, "el cambio estratégico debe quedar documentado");
+  assert.match(src, /\.7 = picks sugeridos no oficiales desde Radar de Bateadores\/Ponches/, "la integración de Radar debe quedar documentada");
   const definitions = src.match(/const LOGIC_VERSION =/g);
   assert.equal(definitions.length, 1, "una sola definición de LOGIC_VERSION");
 });
