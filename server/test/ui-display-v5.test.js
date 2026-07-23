@@ -14,6 +14,7 @@ test("total con proyectado + lineaMercado: los tres campos separados", () => {
   assert.equal(d.proyeccion, "9.2");
   assert.equal(d.lineaReal, 8.5);
   assert.equal(d.senal, "OVER 8.5", "la señal usa la LÍNEA REAL, jamás la proyección");
+  assert.equal(d.spread, "+0.7 carreras");
 });
 
 test("análisis histórico con solo estimado: fallback sin señal fabricada", () => {
@@ -21,14 +22,26 @@ test("análisis histórico con solo estimado: fallback sin señal fabricada", ()
   assert.equal(d.proyeccion, "9.5");
   assert.equal(d.lineaReal, null);
   assert.equal(d.senal, null, "sin línea real verificada no hay señal — la proyección no se disfraza de línea");
+  assert.equal(d.spread, null);
 });
 
 test("sin lineaMercado, sin recomendacion o sin objeto: nunca crash", () => {
-  assert.deepEqual(totalDisplay(null), { proyeccion: null, lineaReal: null, senal: null });
-  assert.deepEqual(totalDisplay({}), { proyeccion: null, lineaReal: null, senal: null });
+  assert.deepEqual(totalDisplay(null), { proyeccion: null, lineaReal: null, senal: null, spread: null });
+  assert.deepEqual(totalDisplay({}), { proyeccion: null, lineaReal: null, senal: null, spread: null });
   const d = totalDisplay({ proyectado: "8.1", lineaMercado: null });
   assert.equal(d.proyeccion, "8.1");
   assert.equal(d.senal, null);
+});
+
+test("spread usa campo autoritario, signo explícito y una decimal", () => {
+  assert.equal(totalDisplay({ proyectado: "9", lineaMercado: 8, spreadModeloMercado: 1 }).spread, "+1.0 carreras");
+  assert.equal(totalDisplay({ proyectado: "7", lineaMercado: 8, spreadModeloMercado: -1 }).spread, "-1.0 carreras");
+  assert.equal(totalDisplay({ proyectado: "8", lineaMercado: 8, spreadModeloMercado: 0 }).spread, "0.0 carreras");
+});
+
+test("AnalysisTab muestra el campo Spread modelo vs mercado", () => {
+  const src = readFileSync(new URL("../../src/components/AnalysisTab.jsx", import.meta.url), "utf8");
+  assert.match(src, /Spread modelo vs mercado: \{spread \?\? "no disponible"\}/);
 });
 
 /* ═══ Dedupe Radar / Props ═══ */

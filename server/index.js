@@ -8,7 +8,7 @@ import { getAllPicks, insertPick, updateResultado, insertAnalysisLog, getAllAnal
 import { buildEvaluation } from "./evaluation.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
-import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, appendMlAbstention, enforceMlValueConsistency, enforceTotalDirection, relabelImpliedNoVigNarratives } from "./verify-picks.js";
+import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, appendMlAbstention, enforceMlValueConsistency, enforceTotalDirection, enforceTotalProjectionMargin, relabelImpliedNoVigNarratives } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
 import { buildBatterRadar } from "./batter-radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
@@ -37,8 +37,10 @@ dotenv.config();
    .7 = picks sugeridos no oficiales desde Radar de Bateadores/Ponches,
    con línea real y canal de parlay aislado del ROI ·
    .8 = umbrales EV ML 3/6/10, regresión 40% para pitchers con <30 IP
-   y abstención automática cuando ningún lado ML alcanza 3%. */
-const LOGIC_VERSION = "2026-07-23.8";
+   y abstención automática cuando ningún lado ML alcanza 3% ·
+   .9 = margen mínimo de proyección de 1.5 carreras para Totales, señal
+   autoritaria por spread y factores, y spread modelo vs mercado visible. */
+const LOGIC_VERSION = "2026-07-23.9";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -755,9 +757,13 @@ Evalúa estos 4 factores antes de asignar señal a un Total:
   2. Clima sin viento superior a 20 km/h, o estadio con techo
   3. Lineup confirmado de ambos equipos (no vacío en MATCHUPS INDIVIDUALES)
   4. Convergencia entre Statcast de bateadores (xwOBA, barrel%) y el perfil del pitcher rival
-ÚNICAMENTE si se cumplen 4 de 4 factores puedes usar "ALTO" en el campo valor; el servidor lo mostrará como SEÑAL ALTA.
-Si se cumplen 0, 1, 2 o 3 factores, usa OBLIGATORIAMENTE "BAJO" en el campo valor; no uses "MEDIO". Incluye textualmente en razon: "⚠️ Total con incertidumbre alta — no recomendado para parlay. Este pick es referencial — la estrategia óptima del sistema favorece Props de pitchers y Moneylines correlacionados sobre Totales con incertidumbre".
-Al reportar los factores usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido: solo 4 factores plenamente cumplidos satisfacen la regla de 4/4.
+Reporta el conteo estructurado en totalCarreras.factores con enteros que sumen exactamente 4: cumplidos, parciales y noCumplidos. Al explicarlo en razon usa EXACTAMENTE el formato "X cumplidos · Y parciales · Z no cumplidos". Un factor parcialmente cumplido NO cuenta como cumplido.
+Aplica la REGLA DE MARGEN MÍNIMO DE PROYECCIÓN usando la línea real de LÍNEAS DE MERCADO:
+- Si |proyección − línea| < 1.5 carreras, usa OBLIGATORIAMENTE "BAJO", sin importar cuántos factores se cumplan, e incluye textualmente en razon: "⚠️ Margen insuficiente — proyección dentro del rango de error del modelo vs línea de mercado".
+- Si |proyección − línea| >= 1.5 y se cumplen 4 de 4 factores, usa "ALTO"; el servidor lo mostrará como SEÑAL ALTA.
+- Si |proyección − línea| >= 1.5 y se cumplen 3 de 4 factores, usa "MEDIO"; el servidor lo mostrará como SEÑAL MEDIA.
+- Si |proyección − línea| >= 1.5 y se cumplen 0, 1 o 2 factores, usa "BAJO" e incluye textualmente en razon: "⚠️ Total con incertidumbre alta — no recomendado para parlay. Este pick es referencial — la estrategia óptima del sistema favorece Props de pitchers y Moneylines correlacionados sobre Totales con incertidumbre".
+El límite exacto de 1.5 carreras sí cuenta como margen suficiente. El servidor recalcula el spread y la señal de forma autoritaria; no inventes una línea ausente.
 
 REGLA DE CUOTAS EXACTAS (obligatoria):
 Usa únicamente cuotas que aparezcan textualmente en LÍNEAS DE MERCADO, para el MISMO lado y la MISMA línea. NUNCA inventes, estimes, promedies ni derives la cuota del lado contrario (la cuota de Vis -1.5 NO es la de Vis +1.5 ni la de Loc +1.5 — son mercados distintos). Escribe los picks sin cuota en el texto: "Equipo +1.5" o "Under 8.5" (el servidor adjunta la cuota real verificada). Si recomiendas un lado cuya cuota NO está listada, di "cuota no disponible" en la razón y NO lo marques VALOR ALTO. Para Props NO existe línea de mercado en los datos enviados a este prompt: nunca escribas una línea numérica ni una cuota estimada. Ningún prop se vuelve pick oficial sin línea y cuota verificadas. Los ángulos de strikeouts de ABRIDORES se validan posteriormente en el Radar de Ponches; puedes recomendarlos como componente estratégico sin point ni cuota, pero no debes convertirlos aquí en un pick Prop oficial.
@@ -805,7 +811,7 @@ REGLA ANTI-RANKINGS:
 PROHIBIDO afirmar posiciones de liga que los datos no incluyen: "lidera MLB", "lidera la liga", "mejor de la liga", "número uno", "top 5", "top 10" o similares. Este análisis NO recibe rankings calculados. Describe con el valor real: "K/9 de élite (11.2)", "perfil de ponches fuerte", "métrica destacada entre los datos del duelo".
 
 Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher titular, toros del bullpen. Al interpretar métricas: xERA y FIP miden el proceso independiente de suerte y defensa (la dirección de la regresión está en REGLAS DE DIRECCIÓN — respétala); xFIP normaliza la tasa de HR al 10.5% de fly balls (xFIP < FIP = la tasa de HR regresará a la media); BABIP alto con LOB% bajo PUEDE indicar mala suerte defensiva o situacional (ver REGLAS DE INTERPRETACIÓN LOB%); GB% alto reduce HR permitidos y favorece al pitcher en estadios grandes; barrel rate y exit velo miden calidad de contacto permitido; whiff% y K% miden dominancia; xwOBA es el indicador más predictivo de producción ofensiva futura; K/BB > 3.0 indica control élite. Responde ÚNICAMENTE JSON sin markdown ni texto extra:
-{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","probLocal":55,"confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"proyectado":"8.9","estimado":"8.9","recomendacion":"OVER|UNDER","razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
+{"resumen":"2 oraciones contexto clave","ventajaPitcheo":"VISITANTE|LOCAL|EQUILIBRADO","ventajaPitcheoTexto":"breve","ventajaOfensiva":"VISITANTE|LOCAL|EQUILIBRADO","ventajaOfensivaTexto":"breve","factoresClave":["f1","f2","f3"],"prediccion":{"ganador":"nombre equipo","probLocal":55,"confianza":"ALTA|MEDIA|BAJA","razon":"razón"},"totalCarreras":{"proyectado":"8.9","estimado":"8.9","recomendacion":"OVER|UNDER","factores":{"cumplidos":4,"parciales":0,"noCumplidos":0},"razon":"razón"},"picks":[{"tipo":"Moneyline|Run Line|Total|Prop","pick":"descripción del pick","valor":"ALTO|MEDIO|BAJO","razon":"por qué tiene valor","riesgo":"BAJO|MEDIO|ALTO"}],"calificacionGeneral":7}`;
 
   try {
     console.log("Modelo enviado a Anthropic:", MODEL);
@@ -849,6 +855,11 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     const dirFix = enforceTotalDirection(analysis.totalCarreras, analysis.picks);
     analysis.totalCarreras = dirFix.totalCarreras;
     analysis.picks = dirFix.picks;
+    /* El signo anterior fija la dirección; ahora el spread absoluto y el
+       conteo estructurado 4/4 fijan autoritariamente la intensidad. */
+    const marginFix = enforceTotalProjectionMargin(analysis.totalCarreras, analysis.picks);
+    analysis.totalCarreras = marginFix.totalCarreras;
+    analysis.picks = marginFix.picks;
     /* Rankings no verificados, hype financiero y comparaciones métricas
        contradictorias fuera de TODA la narrativa */
     sanitizeNarratives(analysis);

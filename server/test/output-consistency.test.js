@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   appendMlAbstention, classifyMlEv, enforceMlValueConsistency,
-  enforceTotalDirection, fixMetricComparisons, ML_ABSTENTION_REASON,
-  TOTAL_DIRECTION_GAP,
+  enforceTotalDirection, enforceTotalProjectionMargin, fixMetricComparisons,
+  ML_ABSTENTION_REASON, TOTAL_MARGIN_NOTE, TOTAL_MIN_PROJECTION_MARGIN,
 } from "../verify-picks.js";
 
 const HOME = "Los Angeles Dodgers";
@@ -144,44 +144,85 @@ test("total proyectado 10.8 vs línea 10 con OVER → intacto, sin nota", () => 
   assert.ok(!("senalClara" in t) || t.senalClara !== false);
 });
 
-/* ═══ 7. Gap chico → señal no clara ═══ */
-test(`|gap| < ${TOTAL_DIRECTION_GAP} → senalClara:false, sin dirección fabricada`, () => {
+/* ═══ 7. Dirección por signo + margen mínimo autoritario ═══ */
+test("gap pequeño no bloquea dirección: el signo corrige Over/Under y el cero conserva recomendación", () => {
   const { totalCarreras: t } = enforceTotalDirection(
-    { proyectado: "9.9", lineaMercado: 10, recomendacion: "UNDER", razon: "x" }, []);
-  assert.equal(t.senalClara, false);
-  assert.equal(t.recomendacion, "UNDER", "la recomendación no se reescribe cuando no hay dirección fuerte");
+    { proyectado: "9.9", lineaMercado: 10, recomendacion: "OVER", razon: "x" }, []);
+  assert.equal(t.recomendacion, "UNDER");
+  assert.ok(!("senalClara" in t));
+  const empate = enforceTotalDirection(
+    { proyectado: "10", lineaMercado: 10, recomendacion: "OVER", razon: "x" }, []).totalCarreras;
+  assert.equal(empate.recomendacion, "OVER");
   // Sin números → nada
   const input = { recomendacion: "OVER", razon: "x" };
   const { totalCarreras: same } = enforceTotalDirection(input, []);
   assert.deepEqual(same, input);
 });
 
-test("gap insuficiente 8.6 vs 8.5 degrada pick Total a noOficial y no queda activo para parlay", () => {
-  const pick = { tipo: "Total", pick: "Under 8.5", valor: "SEÑAL MEDIA", razon: "u", cuotaReal: +102, verificado: true };
-  const { totalCarreras: t, picks } = enforceTotalDirection(
-    { proyectado: "8.6", lineaMercado: 8.5, recomendacion: "UNDER", senalClara: false, razon: "cerca" },
-    [pick]
-  );
-  assert.equal(t.senalClara, false);
-  assert.equal(t.recomendacion, "UNDER", "no se inventa OVER con gap pequeño");
-  assert.equal(picks[0].valor, "SEÑAL NO OFICIAL");
-  assert.equal(picks[0].noOficial, true);
-  assert.equal(picks[0].pick, "Under 8.5");
-  assert.equal(picks[0].cuotaReal, +102);
-  assert.equal(picks[0].verificado, true);
-  assert.match(picks[0].razon, /Gap del total insuficiente; la proyección queda demasiado cerca de la línea para validar una señal/);
-  assert.equal(pickBadge(picks[0]).activo, false);
+test(`|spread| < ${TOTAL_MIN_PROJECTION_MARGIN} → SEÑAL BAJA, nota exacta y spread firmado`, () => {
+  const pick = { tipo: "Total", pick: "Over 8.5", valor: "SEÑAL ALTA", razon: "u", cuotaReal: +102, verificado: true };
+  const input = {
+    proyectado: "9.99", lineaMercado: 8.5, recomendacion: "OVER", razon: "cerca",
+    factores: { cumplidos: 4, parciales: 0, noCumplidos: 0 },
+  };
+  const first = enforceTotalProjectionMargin(input, [pick]);
+  assert.equal(first.totalCarreras.spreadModeloMercado, 1.5, "solo el display se redondea; 1.49 sigue siendo insuficiente");
+  assert.equal(first.picks[0].valor, "SEÑAL BAJA");
+  assert.match(first.totalCarreras.razon, new RegExp(TOTAL_MARGIN_NOTE));
+  assert.match(first.picks[0].razon, new RegExp(TOTAL_MARGIN_NOTE));
+  assert.equal(first.picks[0].cuotaReal, +102);
+  assert.equal(first.picks[0].verificado, true);
+
+  const second = enforceTotalProjectionMargin(first.totalCarreras, first.picks);
+  assert.equal(second.totalCarreras.razon.split(TOTAL_MARGIN_NOTE).length - 1, 1, "nota idempotente en totalCarreras");
+  assert.equal(second.picks[0].razon.split(TOTAL_MARGIN_NOTE).length - 1, 1, "nota idempotente en pick");
+
+  const negative = enforceTotalProjectionMargin({ ...input, proyectado: "7.01" }, [pick]);
+  assert.equal(negative.totalCarreras.spreadModeloMercado, -1.5);
+  assert.equal(negative.picks[0].valor, "SEÑAL BAJA");
 });
 
-test("total claro coherente: 7.8 vs 8.5 Under y 9.2 vs 8.5 Over siguen intactos", () => {
-  const under = { tipo: "Total", pick: "Under 8.5", valor: "SEÑAL MEDIA", razon: "u", cuotaReal: -110 };
-  const over  = { tipo: "Total", pick: "Over 8.5", valor: "SEÑAL MEDIA", razon: "o", cuotaReal: -105 };
-  const u = enforceTotalDirection({ proyectado: "7.8", lineaMercado: 8.5, recomendacion: "UNDER", razon: "x" }, [under]);
-  const o = enforceTotalDirection({ proyectado: "9.2", lineaMercado: 8.5, recomendacion: "OVER", razon: "y" }, [over]);
-  assert.deepEqual(u.picks[0], under);
-  assert.deepEqual(o.picks[0], over);
-  assert.ok(!("senalClara" in u.totalCarreras) || u.totalCarreras.senalClara !== false);
-  assert.ok(!("senalClara" in o.totalCarreras) || o.totalCarreras.senalClara !== false);
+test("|spread| exacto de 1.5 habilita ALTA con 4/4 y MEDIA con 3/4", () => {
+  const over = { tipo: "Total", pick: "Over 10", valor: "SEÑAL BAJA", razon: "o" };
+  const high = enforceTotalProjectionMargin({
+    proyectado: "11.5", lineaMercado: 10, recomendacion: "OVER", razon: "x",
+    factores: { cumplidos: 4, parciales: 0, noCumplidos: 0 },
+  }, [over]);
+  assert.equal(high.picks[0].valor, "SEÑAL ALTA");
+  assert.equal(high.totalCarreras.spreadModeloMercado, 1.5);
+  assert.ok(!high.totalCarreras.razon.includes(TOTAL_MARGIN_NOTE));
+
+  const medium = enforceTotalProjectionMargin({
+    proyectado: "8.5", lineaMercado: 10, recomendacion: "UNDER", razon: "y",
+    factores: { cumplidos: 3, parciales: 1, noCumplidos: 0 },
+  }, [{ ...over, pick: "Under 10" }]);
+  assert.equal(medium.picks[0].valor, "SEÑAL MEDIA");
+  assert.equal(medium.totalCarreras.spreadModeloMercado, -1.5);
+});
+
+test("margen suficiente con 0-2/4 o factores inválidos/ausentes queda en SEÑAL BAJA", () => {
+  const pick = { tipo: "Total", pick: "Over 8", valor: "SEÑAL ALTA", razon: "x" };
+  for (const factores of [
+    { cumplidos: 2, parciales: 1, noCumplidos: 1 },
+    { cumplidos: 4, parciales: 1, noCumplidos: 0 },
+    undefined,
+  ]) {
+    const { picks } = enforceTotalProjectionMargin(
+      { proyectado: "10", lineaMercado: 8, recomendacion: "OVER", factores }, [pick]);
+    assert.equal(picks[0].valor, "SEÑAL BAJA");
+  }
+});
+
+test("sin proyección o línea no muta; un Total no oficial jamás se reactiva", () => {
+  const input = { proyectado: "9", recomendacion: "OVER", razon: "x" };
+  const picks = [{ tipo: "Total", pick: "Over 8", valor: "SEÑAL ALTA", razon: "x" }];
+  assert.deepEqual(enforceTotalProjectionMargin(input, picks), { totalCarreras: input, picks });
+
+  const noOficial = { ...picks[0], valor: "SEÑAL NO OFICIAL", noOficial: true };
+  const out = enforceTotalProjectionMargin({
+    proyectado: "10", lineaMercado: 8, factores: { cumplidos: 4, parciales: 0, noCumplidos: 0 },
+  }, [noOficial]);
+  assert.deepEqual(out.picks[0], noOficial);
 });
 
 /* ═══ 8. Pick Total contradictorio → SEÑAL NO OFICIAL; coherente → intacto ═══ */
@@ -288,24 +329,31 @@ import { readFileSync } from "fs";
 import { sanitizeNarratives } from "../verify-picks.js";
 import { totalDisplay } from "../../src/analysis-display.js";
 
-test("orden de integración en index.js: enforceTotalDirection tras attachMarketTotalLine, enforceMl tras mercado", () => {
+test("orden de integración: attach línea → dirección → margen → sanitización; ML tras mercado", () => {
   const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
   const iAttach  = src.indexOf("attachMarketTotalLine(analysis.totalCarreras");
   const iDirFix  = src.indexOf("enforceTotalDirection(analysis.totalCarreras");
+  const iMargin  = src.indexOf("enforceTotalProjectionMargin(analysis.totalCarreras");
+  const iSanitize = src.indexOf("sanitizeNarratives(analysis)");
   const iMercado = src.indexOf("analysis.mercado = mercado");
   const iMlFix   = src.indexOf("enforceMlValueConsistency(analysis.picks");
   const iAbstain = src.indexOf("appendMlAbstention(analysis.picks");
-  assert.ok(iAttach > -1 && iDirFix > -1 && iMercado > -1 && iMlFix > -1 && iAbstain > -1, "las cinco llamadas existen");
+  assert.ok([iAttach, iDirFix, iMargin, iSanitize, iMercado, iMlFix, iAbstain].every(i => i > -1), "todas las llamadas existen");
   assert.ok(iAttach < iDirFix, "la dirección se corrige DESPUÉS de inyectar lineaMercado");
+  assert.ok(iDirFix < iMargin, "el margen corre DESPUÉS de corregir dirección");
+  assert.ok(iMargin < iSanitize, "la sanitización corre DESPUÉS de clasificar el margen");
   assert.ok(iMercado < iMlFix, "el enforcement de ML corre DESPUÉS de calcular mercado");
   assert.ok(iMlFix < iAbstain, "la abstención se agrega DESPUÉS de clasificar los Moneylines");
   assert.match(src, /misma \.5 \(solo post-proceso\)/, "el historial documenta que pertenece a la .5 sin bump");
 });
 
-test("pipeline: ML degradado tras mercado + dirección del total corregida, encadenados como en index.js", () => {
-  // Simula el orden real: attach ya puso lineaMercado; luego dirección; luego mercado; luego ML
+test("pipeline: dirección y margen del Total antes del enforcement ML", () => {
+  // Simula el orden real: attach ya puso lineaMercado; luego dirección y margen; después ML
   const analysis = {
-    totalCarreras: { proyectado: "9.2", estimado: "9.2", lineaMercado: 10, recomendacion: "OVER", razon: "r" },
+    totalCarreras: {
+      proyectado: "9.2", estimado: "9.2", lineaMercado: 10, recomendacion: "OVER", razon: "r",
+      factores: { cumplidos: 4, parciales: 0, noCumplidos: 0 },
+    },
     picks: [
       { tipo: "Moneyline", pick: `${HOME} ML`, valor: "MEDIO", razon: "m", cuotaReal: -255, verificado: true },
       { tipo: "Total", pick: "Over 10", valor: "SEÑAL MEDIA", razon: "t" },
@@ -314,9 +362,13 @@ test("pipeline: ML degradado tras mercado + dirección del total corregida, enca
   const dirFix = enforceTotalDirection(analysis.totalCarreras, analysis.picks);
   analysis.totalCarreras = dirFix.totalCarreras;
   analysis.picks = dirFix.picks;
+  const marginFix = enforceTotalProjectionMargin(analysis.totalCarreras, analysis.picks);
+  analysis.totalCarreras = marginFix.totalCarreras;
+  analysis.picks = marginFix.picks;
   analysis.picks = enforceMlValueConsistency(analysis.picks, MERCADO_DODGERS, HOME, AWAY);
   analysis.picks = appendMlAbstention(analysis.picks, MERCADO_DODGERS);
   assert.equal(analysis.totalCarreras.recomendacion, "UNDER");
+  assert.equal(analysis.totalCarreras.spreadModeloMercado, -0.8);
   assert.equal(analysis.picks[0].valor, "SIN VALOR", "ML con EV −2% degradado en el pipeline");
   assert.equal(analysis.picks[1].valor, "SEÑAL NO OFICIAL", "Total contradictorio degradado en el pipeline");
   assert.equal(analysis.picks[1].noOficial, true);
@@ -484,8 +536,10 @@ test("totalDisplay: senalClara=false → SEÑAL NO CLARA; dirección corregida s
   assert.equal(noClara.senal, "SEÑAL NO CLARA");
   assert.equal(noClara.proyeccion, "9.9");
   assert.equal(noClara.lineaReal, 10);
+  assert.equal(noClara.spread, "-0.1 carreras");
   const corregida = totalDisplay({ proyectado: "9.2", lineaMercado: 10, recomendacion: "UNDER" });
   assert.equal(corregida.senal, "UNDER 10", "la dirección corregida por el servidor es la que se muestra");
+  assert.equal(corregida.spread, "-0.8 carreras");
 });
 
 /* ═══ F3: bug real encontrado en e2e (Brewers @ Cardinals, analysisId 38) ═══ */

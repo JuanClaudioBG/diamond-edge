@@ -9,12 +9,13 @@ import { readFileSync } from "fs";
 
 const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 
-test("LOGIC_VERSION es 2026-07-23.8 con historial documentado", () => {
-  assert.match(src, /const LOGIC_VERSION = "2026-07-23\.8"/);
+test("LOGIC_VERSION es 2026-07-23.9 con historial documentado", () => {
+  assert.match(src, /const LOGIC_VERSION = "2026-07-23\.9"/);
   assert.match(src, /\.5 = Statcast ofensivo real/, "el historial del bump debe estar documentado");
   assert.match(src, /\.6 = Totales requieren 4\/4 para señal alta/, "el cambio estratégico debe quedar documentado");
   assert.match(src, /\.7 = picks sugeridos no oficiales desde Radar de Bateadores\/Ponches/, "la integración de Radar debe quedar documentada");
   assert.match(src, /\.8 = umbrales EV ML 3\/6\/10/, "los nuevos umbrales y la abstención deben quedar documentados");
+  assert.match(src, /\.9 = margen mínimo de proyección de 1\.5 carreras para Totales/, "el margen mínimo debe quedar documentado");
   const definitions = src.match(/const LOGIC_VERSION =/g);
   assert.equal(definitions.length, 1, "una sola definición de LOGIC_VERSION");
 });
@@ -30,15 +31,18 @@ test("prompt: pitcher con menos de 30 IP recibe regresión 40% y advertencia exa
   assert.match(src, /IP ausente se trata como confianza desconocida/);
 });
 
-test("prompt: Totales requieren 4/4; con menos bajan a BAJO y llevan ambas notas", () => {
-  assert.match(src, /ÚNICAMENTE si se cumplen 4 de 4 factores puedes usar "ALTO"/);
-  assert.match(src, /Si se cumplen 0, 1, 2 o 3 factores, usa OBLIGATORIAMENTE "BAJO"/);
-  assert.match(src, /no uses "MEDIO"/);
+test("prompt: Totales combinan margen 1.5 con 4/4 ALTO, 3/4 MEDIO y 0-2/4 BAJO", () => {
+  assert.match(src, /REGLA DE MARGEN MÍNIMO DE PROYECCIÓN/);
+  assert.match(src, /Si \|proyección − línea\| < 1\.5 carreras, usa OBLIGATORIAMENTE "BAJO"/);
+  assert.match(src, /sin importar cuántos factores se cumplan/);
+  assert.match(src, /⚠️ Margen insuficiente — proyección dentro del rango de error del modelo vs línea de mercado/);
+  assert.match(src, /Si \|proyección − línea\| >= 1\.5 y se cumplen 4 de 4 factores, usa "ALTO"/);
+  assert.match(src, /Si \|proyección − línea\| >= 1\.5 y se cumplen 3 de 4 factores, usa "MEDIO"/);
+  assert.match(src, /Si \|proyección − línea\| >= 1\.5 y se cumplen 0, 1 o 2 factores, usa "BAJO"/);
+  assert.match(src, /El límite exacto de 1\.5 carreras sí cuenta como margen suficiente/);
   assert.match(src, /⚠️ Total con incertidumbre alta — no recomendado para parlay/);
   assert.match(src, /Este pick es referencial — la estrategia óptima del sistema favorece Props de pitchers y Moneylines correlacionados sobre Totales con incertidumbre/);
-  assert.match(src, /solo 4 factores plenamente cumplidos satisfacen la regla de 4\/4/);
-  assert.doesNotMatch(src, /Si se cumplen 3 o 4 factores/);
-  assert.doesNotMatch(src, /Si se cumplen menos de 3/);
+  assert.doesNotMatch(src, /Si se cumplen 0, 1, 2 o 3 factores, usa OBLIGATORIAMENTE "BAJO"/);
 });
 
 test("prompt: reglas explícitas de LOB% en ambas direcciones, sin certezas", () => {
@@ -79,8 +83,9 @@ test("prompt: rankings no verificados prohibidos con alternativas de lenguaje", 
   assert.match(src, /K\/9 de élite \(11\.2\)/, "debe ofrecer el lenguaje sustituto con valor real");
 });
 
-test("esquema: totalCarreras.proyectado presente con estimado como alias compatible", () => {
-  assert.match(src, /"totalCarreras":\{"proyectado":"8\.9","estimado":"8\.9","recomendacion":"OVER\|UNDER","razon":"razón"\}/);
+test("esquema: totalCarreras incluye proyección, alias y factores estructurados", () => {
+  assert.match(src, /"totalCarreras":\{"proyectado":"8\.9","estimado":"8\.9","recomendacion":"OVER\|UNDER","factores":\{"cumplidos":4,"parciales":0,"noCumplidos":0\},"razon":"razón"\}/);
+  assert.match(src, /totalCarreras\.factores con enteros que sumen exactamente 4/);
   assert.match(src, /REGLA DE TOTAL PROYECTADO VS LÍNEA REAL/);
   assert.match(src, /NO es la línea del sportsbook/);
   assert.match(src, /Nunca copies la línea del mercado como proyección/);

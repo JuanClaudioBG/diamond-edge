@@ -352,17 +352,11 @@ export function relabelImpliedNoVigNarratives(analysis, mercado) {
 }
 
 /**
- * La dirección del total la dictan los números del servidor, no la prosa:
- *   proyectado − lineaMercado ≥ +0.3 → OVER · ≤ −0.3 → UNDER ·
- *   |gap| < 0.3 → senalClara:false (sin dirección fuerte fabricada).
- * Un pick de Total que contradiga la dirección deja de ser recomendación
- * activa: SEÑAL NO OFICIAL + noOficial:true, conservando pick, cuotaReal,
- * verificado y razón como auditoría. Con gap insuficiente, cualquier pick de
- * Total queda como SEÑAL NO OFICIAL: el servidor no valida dirección.
- * Puro: devuelve { totalCarreras, picks } nuevos; sin números no toca nada.
+ * La dirección del total la dicta el signo de proyectado − lineaMercado:
+ * positivo → OVER · negativo → UNDER · cero → conserva la recomendación.
+ * La intensidad se clasifica por separado en enforceTotalProjectionMargin.
+ * Un pick que contradiga la dirección numérica queda como SEÑAL NO OFICIAL.
  */
-export const TOTAL_DIRECTION_GAP = 0.3;
-
 export function enforceTotalDirection(totalCarreras, picks) {
   const proy  = parseFloat(totalCarreras?.proyectado ?? totalCarreras?.estimado);
   const linea = totalCarreras?.lineaMercado != null ? Number(totalCarreras.lineaMercado) : NaN;
@@ -371,47 +365,91 @@ export function enforceTotalDirection(totalCarreras, picks) {
   }
   const gap = proy - linea;
   let t = { ...totalCarreras };
-  let dir = null;
-  if (Math.abs(gap) < TOTAL_DIRECTION_GAP) {
-    t.senalClara = false;                                           // muy cerca: sin dirección fuerte
-  } else {
-    dir = gap > 0 ? "OVER" : "UNDER";
+  const dir = gap > 0 ? "OVER" : gap < 0 ? "UNDER" : null;
+  if (dir) {
     if (t.recomendacion !== dir) {
       t.recomendacion = dir;
       t.razon = `Dirección corregida por el servidor: proyección ${proy} vs línea ${linea} → ${dir}. ${t.razon ?? ""}`.trim();
     }
   }
   let outPicks = picks;
-  if (Array.isArray(picks)) {
-    if (dir) {
-      outPicks = picks.map(pick => {
-        if (!norm(pick?.tipo).startsWith("total")) return pick;
-        const m = String(pick.pick ?? "").match(/\b(over|under)\b/i);
-        if (!m) return pick;
-        const side = m[1].toUpperCase();
-        if (side === dir) return pick;                              // coherente: intacto
-        return {
-          ...pick,
-          valor: "SEÑAL NO OFICIAL",
-          noOficial: true,
-          razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
-        };
-      });
-    } else {
-      /* Gap insuficiente: el pick de Total no puede salir como recomendación
-         cuando el propio servidor dice SEÑAL NO CLARA */
-      outPicks = picks.map(pick => {
-        if (!norm(pick?.tipo).startsWith("total")) return pick;
-        if (pick.noOficial === true || pick.valor === "SEÑAL NO OFICIAL") return pick;
-        return {
-          ...pick,
-          valor: "SEÑAL NO OFICIAL",
-          noOficial: true,
-          razon: `⚠️ Gap del total insuficiente; la proyección queda demasiado cerca de la línea para validar una señal (proyección ${proy} vs línea ${linea}). ${pick.razon ?? ""}`.trim(),
-        };
-      });
-    }
+  if (Array.isArray(picks) && dir) {
+    outPicks = picks.map(pick => {
+      if (!norm(pick?.tipo).startsWith("total")) return pick;
+      const m = String(pick.pick ?? "").match(/\b(over|under)\b/i);
+      if (!m) return pick;
+      const side = m[1].toUpperCase();
+      if (side === dir) return pick;
+      return {
+        ...pick,
+        valor: "SEÑAL NO OFICIAL",
+        noOficial: true,
+        razon: `⚠️ Pick inconsistente con la dirección del servidor (proyección ${proy} vs línea ${linea} → ${dir}). ${pick.razon ?? ""}`.trim(),
+      };
+    });
   }
+  return { totalCarreras: t, picks: outPicks };
+}
+
+export const TOTAL_MIN_PROJECTION_MARGIN = 1.5;
+export const TOTAL_MARGIN_NOTE = "⚠️ Margen insuficiente — proyección dentro del rango de error del modelo vs línea de mercado";
+
+function completedTotalFactors(totalCarreras) {
+  const factors = totalCarreras?.factores;
+  if (!factors || typeof factors !== "object") return null;
+  const values = [factors.cumplidos, factors.parciales, factors.noCumplidos];
+  if (values.some(v => !Number.isInteger(v) || v < 0 || v > 4)) return null;
+  if (values.reduce((sum, value) => sum + value, 0) !== 4) return null;
+  return factors.cumplidos;
+}
+
+function appendOnce(text, note) {
+  const base = String(text ?? "").trim();
+  if (base.includes(note)) return base;
+  return base ? `${base} ${note}` : note;
+}
+
+/**
+ * Clasificación autoritaria del Total usando distancia vs mercado y factores:
+ * |spread| < 1.5 → BAJA · >= 1.5 con 4/4 → ALTA · con 3/4 → MEDIA.
+ * Conteo ausente/inválido o 0-2/4 → BAJA. El spread firmado se conserva a
+ * una decimal para presentación, pero el umbral se evalúa sin redondear.
+ */
+export function enforceTotalProjectionMargin(totalCarreras, picks) {
+  const proy  = parseFloat(totalCarreras?.proyectado ?? totalCarreras?.estimado);
+  const linea = totalCarreras?.lineaMercado != null ? Number(totalCarreras.lineaMercado) : NaN;
+  if (!Number.isFinite(proy) || !Number.isFinite(linea)) {
+    return { totalCarreras, picks };
+  }
+
+  const spread = proy - linea;
+  const insufficient = Math.abs(spread) < TOTAL_MIN_PROJECTION_MARGIN;
+  const fulfilled = completedTotalFactors(totalCarreras);
+  const valor = insufficient
+    ? "SEÑAL BAJA"
+    : fulfilled === 4
+      ? "SEÑAL ALTA"
+      : fulfilled === 3
+        ? "SEÑAL MEDIA"
+        : "SEÑAL BAJA";
+  const t = {
+    ...totalCarreras,
+    spreadModeloMercado: Math.round(spread * 10) / 10,
+    razon: insufficient ? appendOnce(totalCarreras?.razon, TOTAL_MARGIN_NOTE) : totalCarreras?.razon,
+  };
+
+  const outPicks = Array.isArray(picks)
+    ? picks.map(pick => {
+      if (!norm(pick?.tipo).startsWith("total")) return pick;
+      if (pick.noOficial === true || pick.valor === "SEÑAL NO OFICIAL") return pick;
+      return {
+        ...pick,
+        valor,
+        razon: insufficient ? appendOnce(pick.razon, TOTAL_MARGIN_NOTE) : pick.razon,
+      };
+    })
+    : picks;
+
   return { totalCarreras: t, picks: outPicks };
 }
 

@@ -231,7 +231,7 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick,
         <div className="acard-b">
           {(() => {
             const t = analysis.totalCarreras;
-            const { proyeccion, lineaReal, senal } = totalDisplay(t);
+            const { proyeccion, lineaReal, senal, spread } = totalDisplay(t);
             return (
               <>
                 <div className="tot-row">
@@ -245,6 +245,7 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick,
                 <div style={{ fontFamily: "var(--fm)", fontSize: 10, color: "var(--mu)", marginTop: 8 }}>
                   Proyección del modelo: {proyeccion ?? "–"}
                   {" · "}Línea real: {lineaReal != null ? lineaReal : "no verificada"}
+                  {" · "}Spread modelo vs mercado: {spread ?? "no disponible"}
                   {senal && <> · Señal: {senal}</>}
                 </div>
               </>

@@ -16,18 +16,29 @@ const norm = (s) => String(s ?? "")
  * Compatible con análisis históricos que solo traen `estimado`.
  */
 export function totalDisplay(t) {
-  if (!t) return { proyeccion: null, lineaReal: null, senal: null };
+  if (!t) return { proyeccion: null, lineaReal: null, senal: null, spread: null };
   const proyeccion = t.proyectado ?? t.estimado ?? null;
   const lineaReal  = t.lineaMercado ?? null;
+  const rawSpread = t.spreadModeloMercado != null
+    ? Number(t.spreadModeloMercado)
+    : proyeccion != null && lineaReal != null
+      && Number.isFinite(Number(proyeccion)) && Number.isFinite(Number(lineaReal))
+      ? Number(proyeccion) - Number(lineaReal)
+      : NaN;
+  const roundedSpread = Number.isFinite(rawSpread) ? Math.round(rawSpread * 10) / 10 : null;
+  const normalizedSpread = Object.is(roundedSpread, -0) ? 0 : roundedSpread;
+  const spread = normalizedSpread == null
+    ? null
+    : `${normalizedSpread > 0 ? "+" : ""}${normalizedSpread.toFixed(1)} carreras`;
   /* Proyección demasiado cerca de la línea: el servidor marca senalClara=false
      y no se fabrica dirección fuerte */
   if (t.senalClara === false) {
-    return { proyeccion, lineaReal, senal: "SEÑAL NO CLARA" };
+    return { proyeccion, lineaReal, senal: "SEÑAL NO CLARA", spread };
   }
   const senal = t.recomendacion && lineaReal != null
     ? `${t.recomendacion} ${lineaReal}`   // recomendacion ya viene corregida por el servidor
     : null;
-  return { proyeccion, lineaReal, senal };
+  return { proyeccion, lineaReal, senal, spread };
 }
 
 /**
