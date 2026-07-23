@@ -8,7 +8,7 @@ import { getAllPicks, insertPick, updateResultado, insertAnalysisLog, getAllAnal
 import { buildEvaluation } from "./evaluation.js";
 import { getBullpenFatigue, fmtBullpenFatigue } from "./bullpen.js";
 import { americanToProb, devig } from "./backtest/odds-math.js";
-import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, enforceMlValueConsistency, enforceTotalDirection, relabelImpliedNoVigNarratives } from "./verify-picks.js";
+import { verifyPicks, sanitizeTotalNarrative, sanitizeNarratives, attachMarketTotalLine, appendMlAbstention, enforceMlValueConsistency, enforceTotalDirection, relabelImpliedNoVigNarratives } from "./verify-picks.js";
 import { getStrikeoutRadar } from "./radar.js";
 import { buildBatterRadar } from "./batter-radar.js";
 import { getPlayerTeamMap, buildBatterProfiles, fmtBatterTeam, fmtBatterCoverage, getBatterStatcastProfile } from "./batter-profiles.js";
@@ -35,8 +35,10 @@ dotenv.config();
    .6 = Totales requieren 4/4 para señal alta, nota estratégica obligatoria
    con incertidumbre y prioridad de parlay correlacionado ML + Over Ks ·
    .7 = picks sugeridos no oficiales desde Radar de Bateadores/Ponches,
-   con línea real y canal de parlay aislado del ROI. */
-const LOGIC_VERSION = "2026-07-21.7";
+   con línea real y canal de parlay aislado del ROI ·
+   .8 = umbrales EV ML 3/6/10, regresión 40% para pitchers con <30 IP
+   y abstención automática cuando ningún lado ML alcanza 3%. */
+const LOGIC_VERSION = "2026-07-23.8";
 const MODEL         = "claude-sonnet-4-6";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -777,6 +779,14 @@ La tarjeta estructurada del servidor es la ÚNICA fuente oficial de cuota, proba
 REGLA DE TOTAL PROYECTADO VS LÍNEA REAL:
 totalCarreras.proyectado es TU proyección de carreras esperadas del juego — un número tuyo, derivado del análisis. NO es la línea del sportsbook: la línea real solo existe en LÍNEAS DE MERCADO y la verifica el servidor. Repite el mismo número en estimado (compatibilidad). Nunca copies la línea del mercado como proyección ni presentes tu proyección como si fuera la línea real. La señal Over/Under contra la línea real verificada la construye el servidor, no tú.
 
+REGLA DE MUESTRA PEQUEÑA DEL PITCHER:
+Si un pitcher tiene menos de 30 IP en la temporada, aplica una regresión a la media del 40% antes de usar métricas extremas como xERA, FIP o Hard Hit% para evaluar Moneyline, Run Line o Total.
+La regresión reduce en 40% la distancia entre la métrica observada y una referencia neutral:
+métrica ajustada = media de referencia + 0.60 × (métrica observada − media de referencia).
+NO multipliques directamente la métrica por 0.60, porque eso puede mejorar artificialmente métricas donde un número bajo es favorable. Si no existe una media verificable en los datos, no inventes una cifra ajustada: concede únicamente 60% del peso analítico a esa métrica.
+Incluye textualmente en factoresClave y en cualquier razón que dependa de ese pitcher: "MUESTRA PEQUEÑA — métricas con baja confianza estadística".
+Exactamente 30 IP no activa esta penalización. IP ausente se trata como confianza desconocida, nunca como muestra suficiente.
+
 REGLAS DE DIRECCIÓN ERA vs xERA/FIP (obligatorias, no las inviertas):
 - xERA MENOR que ERA = los resultados reales fueron PEORES que el proceso → posible MEJORA futura del ERA.
 - xERA MAYOR que ERA = los resultados reales fueron MEJORES que el proceso → posible DETERIORO futuro.
@@ -876,6 +886,7 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
     /* ML con EV del servidor ≤ 0 jamás sale como pick de valor — requiere
        mercado ya calculado, por eso vive AQUÍ y no dentro de verifyPicks */
     analysis.picks = enforceMlValueConsistency(analysis.picks, mercado, h.team.name, a.team.name);
+    analysis.picks = appendMlAbstention(analysis.picks, mercado);
     /* Ninguna narrativa final conserva "implícita": coincide con la sin vig
        del snapshot → se re-etiqueta; no coincide → frase genérica. También
        requiere mercado ya calculado, por eso vive aquí y no en sanitizeNarratives */
@@ -963,8 +974,9 @@ Considera: ventaja de local, duelo de pitchers, matchup de bateadores vs pitcher
       analysis.batterRadar = verifyBatterRadarLines(analysis.batterRadar, propsSnapshot);
     }
 
-    /* Sugerencias calculadas en servidor y guardadas solo en output_json.
-       Nunca se agregan a analysis.picks ni a selectedPropCandidates. */
+    /* Sugerencias calculadas en servidor y congeladas en output_json.
+       Nunca se insertan automáticamente ni alimentan selectedPropCandidates;
+       la UI puede persistir una selección explícita como "Prop sugerido". */
     analysis.suggestedPicks = buildRadarSuggestedPicks({
       batterRadar: analysis.batterRadar,
       radar: analysis.radar,

@@ -145,11 +145,18 @@ export default function DiamondEdge() {
     } catch(e) { console.error("Error guardando pick:", e); }
   };
 
-  /* Los ÁNGULOS RADAR son efímeros: participan en el parlay, pero no se
-     persisten ni entran al historial, settlement o ROI oficial. */
-  const addSuggestedPick = (pick) => {
+  /* Los ÁNGULOS RADAR participan en el parlay y se guardan para tracking
+     manual, pero su tipo separado los mantiene fuera de settlement/ROI. */
+  const addSuggestedPick = async (pick) => {
     const partido = `${sel.teams.away.team.name} @ ${sel.teams.home.team.name}`;
     setParlay(p => [...p, { id: Date.now(), game: partido, ...pick }]);
+    try {
+      await fetch(`${API}/api/picks`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fecha: toDay(), partido, tipo: "Prop sugerido", pick: pick.pick, valor: pick.valor, riesgo: pick.riesgo, analysis_id: analysis?.analysisId ?? null }),
+      });
+      loadHistorial();
+    } catch(e) { console.error("Error guardando Ángulo Radar:", e); }
   };
 
   const rmPick = (id) => setParlay(p => p.filter(x => x.id !== id));

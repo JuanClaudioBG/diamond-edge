@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  enforceMlValueConsistency, enforceTotalDirection, fixMetricComparisons,
+  appendMlAbstention, classifyMlEv, enforceMlValueConsistency,
+  enforceTotalDirection, fixMetricComparisons, ML_ABSTENTION_REASON,
   TOTAL_DIRECTION_GAP,
 } from "../verify-picks.js";
 
@@ -25,64 +26,58 @@ const mlPick = (over = {}) => ({
   ...over,
 });
 
-/* ═══ 1. Caso Dodgers literal: EV −2% jamás es VALOR MEDIO ═══ */
+/* ═══ 1. Umbrales autoritarios de EV Moneyline ═══ */
+test("classifyMlEv respeta exactamente <3, [3,6), [6,10] y >10", () => {
+  assert.equal(classifyMlEv(-5), "SIN VALOR");
+  assert.equal(classifyMlEv(0), "SIN VALOR");
+  assert.equal(classifyMlEv(2.9), "SIN VALOR");
+  assert.equal(classifyMlEv(3), "BAJO");
+  assert.equal(classifyMlEv(5.9), "BAJO");
+  assert.equal(classifyMlEv(6), "MEDIO");
+  assert.equal(classifyMlEv(10), "MEDIO");
+  assert.equal(classifyMlEv(10.1), "ALTO");
+  assert.equal(classifyMlEv(NaN), null);
+});
+
 test("ML con EV −2% (mercado 69 vs modelo 67) → SIN VALOR, cuotaReal y verificado conservados", () => {
   const [out] = enforceMlValueConsistency([mlPick()], MERCADO_DODGERS, HOME, AWAY);
   assert.equal(out.valor, "SIN VALOR");
   assert.equal(out.cuotaReal, -255, "la cuota congelada se conserva");
   assert.equal(out.verificado, true);
-  assert.match(out.razon, /EV del servidor: -2\.0% — la cuota paga menos que la probabilidad estimada; no es pick de valor\./);
+  assert.match(out.razon, /EV del servidor: -2\.0% — edge insuficiente; no se recomienda como apuesta\./);
   assert.match(out.razon, /El pitcheo favorece al local\./, "la razón original se conserva tras la nota");
 });
 
-/* ═══ 2. EV positivo pero mínimo: máximo VALOR BAJO ═══ */
-test("ML con EV +0.3% y VALOR MEDIO → VALOR BAJO con nota; cuotaReal y verificado conservados", () => {
+test("clasificación del servidor reemplaza el valor del LLM en todas las bandas", () => {
   const mercado = { ...MERCADO_DODGERS, probModeloLocal: 69.3 };
   const [out] = enforceMlValueConsistency([mlPick({ valor: "MEDIO" })], mercado, HOME, AWAY);
-  assert.equal(out.valor, "BAJO");
+  assert.equal(out.valor, "SIN VALOR");
   assert.equal(out.cuotaReal, -255);
   assert.equal(out.verificado, true);
-  assert.match(out.razon, /Edge del servidor: \+0\.3% — ventaja mínima; se degrada a valor bajo\./);
-});
+  assert.match(out.razon, /edge insuficiente/);
 
-test("ML con EV +1.9% y VALOR ALTO → VALOR BAJO", () => {
-  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 70.9 };
-  const [out] = enforceMlValueConsistency([mlPick({ valor: "ALTO" })], mercado, HOME, AWAY);
-  assert.equal(out.valor, "BAJO");
-  assert.match(out.razon, /Edge del servidor: \+1\.9% — ventaja mínima; se degrada a valor bajo\./);
-});
-
-test("ML con EV +2.5% y VALOR ALTO → VALOR MEDIO", () => {
-  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 71.5 };
-  const [out] = enforceMlValueConsistency([mlPick({ valor: "ALTO" })], mercado, HOME, AWAY);
-  assert.equal(out.valor, "MEDIO");
-  assert.match(out.razon, /Edge del servidor: \+2\.5% — ventaja moderada; se degrada a valor medio\./);
-});
-
-test("ML con EV +5.5% y VALOR ALTO queda intacto; no se eleva automáticamente", () => {
-  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 74.5 };
-  const high = mlPick({ valor: "ALTO", razon: "Edge real amplio." });
-  const low  = mlPick({ valor: "BAJO", razon: "Conservador." });
-  const [outHigh] = enforceMlValueConsistency([high], mercado, HOME, AWAY);
-  const [outLow]  = enforceMlValueConsistency([low], mercado, HOME, AWAY);
-  assert.deepEqual(outHigh, high);
-  assert.deepEqual(outLow, low);
-});
-
-/* ═══ 2b. EV positivo medio: máximo VALOR MEDIO ═══ */
-test("ML con EV +3% → badge MEDIO del LLM intacto en esta fase", () => {
-  const mercado = { ...MERCADO_DODGERS, probModeloLocal: 72 };  // 72 − 69 = +3
-  const [out] = enforceMlValueConsistency([mlPick()], mercado, HOME, AWAY);
-  assert.equal(out.valor, "MEDIO");
-  assert.ok(!/EV del servidor/.test(out.razon));
+  const bands = [
+    [72, "BAJO", /valor bajo/],       // +3
+    [75, "MEDIO", /valor medio/],     // +6
+    [79, "MEDIO", /valor medio/],     // +10
+    [79.1, "ALTO", /valor alto/],     // +10.1
+  ];
+  for (const [probModeloLocal, valor, note] of bands) {
+    const [classified] = enforceMlValueConsistency(
+      [mlPick({ valor: valor === "ALTO" ? "BAJO" : "ALTO" })],
+      { ...MERCADO_DODGERS, probModeloLocal }, HOME, AWAY
+    );
+    assert.equal(classified.valor, valor);
+    assert.match(classified.razon, note);
+  }
 });
 
 /* ═══ 3. Visitante usa EV espejado ═══ */
 test("ML visitante: EV = (100−probModeloLocal) − probMercadoVisitante", () => {
-  // visitante: (100−67) − 31 = +2 → intacto
+  // visitante: (100−67) − 31 = +2 → SIN VALOR
   const [vAway] = enforceMlValueConsistency(
     [mlPick({ pick: `${AWAY} ML`, valor: "BAJO" })], MERCADO_DODGERS, HOME, AWAY);
-  assert.equal(vAway.valor, "BAJO", "EV visitante +2%: no se degrada");
+  assert.equal(vAway.valor, "SIN VALOR");
   // modelo local 74 → visitante 26 − 31 = −5 → SIN VALOR
   const [vNeg] = enforceMlValueConsistency(
     [mlPick({ pick: `${AWAY} ML`, valor: "MEDIO" })],
@@ -91,7 +86,33 @@ test("ML visitante: EV = (100−probModeloLocal) − probMercadoVisitante", () =
   assert.match(vNeg.razon, /EV del servidor: -5\.0%/);
 });
 
-/* ═══ 4. mercado null / lado no mapeable / no-ML: no tocar ═══ */
+/* ═══ 4. Abstención ML ═══ */
+test("ambos edges bajo 3% agregan una abstención exacta e idempotente", () => {
+  const mercado = { probModeloLocal: 51, probMercadoLocal: 50, probMercadoVisitante: 50 };
+  const once = appendMlAbstention([mlPick()], mercado);
+  const abstention = once.find(p => p.abstencion === true);
+  assert.deepEqual(abstention, {
+    tipo: "Sin pick recomendado",
+    pick: "Abstenerse en Moneyline",
+    valor: "SIN VALOR",
+    riesgo: "N/A",
+    abstencion: true,
+    razon: ML_ABSTENTION_REASON,
+  });
+  const twice = appendMlAbstention(once, mercado);
+  assert.equal(twice.filter(p => p.abstencion).length, 1);
+});
+
+test("edge exacto de 3% evita abstención; mercado incompleto no fabrica tarjeta", () => {
+  const atThreshold = appendMlAbstention([], {
+    probModeloLocal: 53, probMercadoLocal: 50, probMercadoVisitante: 50,
+  });
+  assert.deepEqual(atThreshold, []);
+  const original = [mlPick()];
+  assert.equal(appendMlAbstention(original, { probModeloLocal: 51, probMercadoLocal: 50 }), original);
+});
+
+/* ═══ 5. mercado null / lado no mapeable / no-ML: no tocar ═══ */
 test("mercado null, probModelo ausente, lado no mapeable o pick no-ML → intactos", () => {
   const pick = mlPick();
   assert.deepEqual(enforceMlValueConsistency([pick], null, HOME, AWAY), [pick]);
@@ -273,9 +294,11 @@ test("orden de integración en index.js: enforceTotalDirection tras attachMarket
   const iDirFix  = src.indexOf("enforceTotalDirection(analysis.totalCarreras");
   const iMercado = src.indexOf("analysis.mercado = mercado");
   const iMlFix   = src.indexOf("enforceMlValueConsistency(analysis.picks");
-  assert.ok(iAttach > -1 && iDirFix > -1 && iMercado > -1 && iMlFix > -1, "las cuatro llamadas existen");
+  const iAbstain = src.indexOf("appendMlAbstention(analysis.picks");
+  assert.ok(iAttach > -1 && iDirFix > -1 && iMercado > -1 && iMlFix > -1 && iAbstain > -1, "las cinco llamadas existen");
   assert.ok(iAttach < iDirFix, "la dirección se corrige DESPUÉS de inyectar lineaMercado");
   assert.ok(iMercado < iMlFix, "el enforcement de ML corre DESPUÉS de calcular mercado");
+  assert.ok(iMlFix < iAbstain, "la abstención se agrega DESPUÉS de clasificar los Moneylines");
   assert.match(src, /misma \.5 \(solo post-proceso\)/, "el historial documenta que pertenece a la .5 sin bump");
 });
 
@@ -292,10 +315,13 @@ test("pipeline: ML degradado tras mercado + dirección del total corregida, enca
   analysis.totalCarreras = dirFix.totalCarreras;
   analysis.picks = dirFix.picks;
   analysis.picks = enforceMlValueConsistency(analysis.picks, MERCADO_DODGERS, HOME, AWAY);
+  analysis.picks = appendMlAbstention(analysis.picks, MERCADO_DODGERS);
   assert.equal(analysis.totalCarreras.recomendacion, "UNDER");
   assert.equal(analysis.picks[0].valor, "SIN VALOR", "ML con EV −2% degradado en el pipeline");
   assert.equal(analysis.picks[1].valor, "SEÑAL NO OFICIAL", "Total contradictorio degradado en el pipeline");
   assert.equal(analysis.picks[1].noOficial, true);
+  assert.equal(analysis.picks[2].tipo, "Sin pick recomendado");
+  assert.equal(analysis.picks[2].razon, ML_ABSTENTION_REASON);
 });
 
 test("sanitizeNarratives ahora corrige comparaciones métricas en razones y factores", () => {
@@ -495,12 +521,20 @@ test("pickBadge: pick noOficial → activo:false, clase neutra NOOF, texto SEÑA
   assert.equal(b.texto, "SEÑAL NO OFICIAL");
 });
 
-test("pickBadge: picks normales siguen activos con su clase de siempre", () => {
+test("pickBadge: SIN VALOR y abstención quedan inactivos; picks válidos conservan su clase", () => {
   assert.deepEqual(pickBadge({ valor: "MEDIO" }), { texto: "VALOR MEDIO", clase: "MEDIO", activo: true });
   assert.deepEqual(pickBadge({ valor: "SEÑAL ALTA" }), { texto: "SEÑAL ALTA", clase: "ALTO", activo: true });
-  assert.deepEqual(pickBadge({ valor: "SIN VALOR" }), { texto: "SIN VALOR", clase: "BAJO", activo: true });
+  assert.deepEqual(pickBadge({ valor: "SIN VALOR" }), { texto: "SIN VALOR", clase: "BAJO", activo: false });
+  assert.deepEqual(pickBadge({ tipo: "Sin pick recomendado", valor: "SIN VALOR", abstencion: true }), { texto: "ABSTENERSE", clase: "NOOF", activo: false });
   assert.deepEqual(pickBadge({ valor: "SIN CUOTA" }), { texto: "SIN CUOTA", clase: "SIN CUOTA", activo: true });
   assert.equal(pickBadge(null).activo, false, "pick null jamás es activo");
+});
+
+test("AnalysisTab solo ofrece + PARLAY cuando pickBadge está activo", () => {
+  const tab = readFileSync(new URL("../../src/components/AnalysisTab.jsx", import.meta.url), "utf8");
+  assert.match(tab, /badge\.activo && <button className="padd"/);
+  assert.match(tab, /Recomendación de abstención — no es una apuesta y no se agrega al parlay/);
+  assert.match(tab, /Edge por debajo del umbral mínimo — no se agrega al parlay/);
 });
 
 test("relabelImpliedNoVig: 'probabilidad implícita 54.7%' que coincide con sin vig → re-etiquetada", () => {

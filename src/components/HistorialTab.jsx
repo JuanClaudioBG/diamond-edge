@@ -84,6 +84,7 @@ function EvaluacionMoneyball({ ev }) {
             ["ML verificado (entra a ROI)", vs.mlVerificado],
             ["Props oficiales (ROI propio)", vs.propsOficiales],
             ["Señales RL/Total (sin EV)",   vs.senalesRLTotal],
+            ["Ángulos Radar (tracking manual)", vs.propsSugeridos],
             ["Props para revisar",          vs.propsParaRevisar],
             ["Props legado",                vs.propsLegado],
             ["Histórico sin registro",      vs.historicoSinRegistro],
@@ -197,12 +198,17 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
       )}
 
       {/* Picks list */}
-      {picks.map(p => (
-        <div key={p.id} className="hpick">
+      {picks.map(p => {
+        const radarSuggested = String(p.tipo ?? "").toLowerCase() === "prop sugerido";
+        return (
+        <div key={p.id} className={`hpick${radarSuggested ? " radar-history" : ""}`}>
           <div className="hpick-info">
             <div className="hpick-gm">{p.partido} · {p.fecha}</div>
             <div className="hpick-pk">{p.pick}</div>
-            <div className="hpick-mt">{p.tipo} · Valor: {p.valor} · Riesgo: {p.riesgo}</div>
+            <div className="hpick-mt">
+              {radarSuggested && <span className="history-radar-tag">ÁNGULO RADAR</span>}
+              {p.tipo} · Valor: {p.valor} · Riesgo: {p.riesgo}
+            </div>
           </div>
           <div className="rbtns">
             {p.resultado === "push" && <span className="rbtn on">PUSH</span>}
@@ -221,7 +227,7 @@ export default function HistorialTab({ picks, evaluation, onMarcarResultado }) {
             </button>
           </div>
         </div>
-      ))}
+      );})}
 
       {pendientes > 0 && (
         <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--mu)", textAlign: "center", letterSpacing: 1 }}>

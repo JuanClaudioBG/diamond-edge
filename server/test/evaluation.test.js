@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   record, buildEvaluation, roiML, priceForPickSide,
-  findExactDuplicates, findReanalyses, OFFICIAL_MIN_N,
+  OFFICIAL_MIN_N,
 } from "../evaluation.js";
 
 const HOME = "San Francisco Giants";
@@ -187,6 +187,28 @@ test("Props (legado y para revisar) nunca aportan ROI", () => {
   assert.equal(ev.byVerificationStatus.propsParaRevisar.n, 1);
   assert.equal(ev.byVerificationStatus.propsParaRevisar.roiEligible, false);
   assert.equal(ev.officialSample.roiML.n, 0);
+});
+
+test("Prop sugerido enlazado se trackea aparte y no altera muestra ni ROI oficiales", () => {
+  const a = mkAnalysis({ id: 61 });
+  const ev = buildEvaluation({
+    picks: [
+      mkPick({ analysis_id: 61, resultado: "ganó" }),
+      mkPick({ analysis_id: 61, tipo: "Prop sugerido", pick: "Jugador — Hits Over 0.5", valor: "ÁNGULO RADAR", resultado: "ganó" }),
+      mkPick({ analysis_id: 61, tipo: "Prop para revisar", pick: "Jugador — Over Ks", resultado: "perdió" }),
+    ],
+    analyses: [a],
+  });
+  assert.equal(ev.overall.n, 3, "el tracking general conserva las selecciones manuales");
+  assert.equal(ev.officialSample.n, 1, "solo ML/RL/Total entra a la muestra principal");
+  assert.equal(ev.officialSample.ganados, 1);
+  assert.equal(ev.officialSample.roiML.n, 1);
+  assert.equal(ev.officialSample.roiProps.n, 0);
+  assert.equal(ev.byVerificationStatus.propsSugeridos.n, 1);
+  assert.equal(ev.byVerificationStatus.propsSugeridos.winRate, 1);
+  assert.equal(ev.byVerificationStatus.propsSugeridos.roiEligible, false);
+  assert.equal(ev.byVerificationStatus.propsSugeridos.officialSampleEligible, false);
+  assert.equal(ev.byVerificationStatus.propsParaRevisar.n, 1);
 });
 
 /* ═══ 12. Picks viejos sin campos nuevos no explotan ═══ */

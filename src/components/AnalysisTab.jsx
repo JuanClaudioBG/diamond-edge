@@ -278,7 +278,11 @@ export default function AnalysisTab({ analysis, analyzing, onAnalyze, onAddPick,
               </div>
               {!badge.activo && (
                 <div style={{ fontSize: 10, color: "var(--mu)", fontFamily: "var(--fm)", marginBottom: 4 }}>
-                  El pick original contradijo la dirección del servidor — se conserva solo como auditoría.
+                  {pk.abstencion
+                    ? "Recomendación de abstención — no es una apuesta y no se agrega al parlay."
+                    : pk.valor === "SIN VALOR"
+                      ? "Edge por debajo del umbral mínimo — no se agrega al parlay."
+                      : "El pick original contradijo la dirección del servidor — se conserva solo como auditoría."}
                 </div>
               )}
               <div className="pick-rs">{pk.razon}</div>

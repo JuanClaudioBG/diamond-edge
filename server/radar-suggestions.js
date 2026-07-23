@@ -1,7 +1,8 @@
 /*
  * Picks sugeridos derivados exclusivamente de ambos Radares.
  * Son ángulos informativos con línea/cuota verificadas para el parlay UI:
- * jamás son picks oficiales, no se persisten y no participan en ROI/CLV.
+ * jamás son picks oficiales ni participan en ROI/CLV. Solo se persisten
+ * cuando el usuario los añade explícitamente al parlay para tracking manual.
  */
 
 const BATTER_SCORE_MIN = 7;

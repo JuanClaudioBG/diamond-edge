@@ -18,6 +18,10 @@ import { findBatterPropLine } from "./player-props.js";
 
 const norm = (s) => String(s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "");
 const tipoDe = (p) => norm(p?.tipo).replace(/\s+/g, "");
+const isOfficialMainPick = (p) => {
+  const tipo = tipoDe(p);
+  return tipo.startsWith("moneyline") || tipo.startsWith("runline") || tipo.startsWith("total");
+};
 
 export const OFFICIAL_MIN_N = 30;
 
@@ -225,9 +229,11 @@ export function buildEvaluation({ picks, analyses } = {}) {
   analyses = analyses ?? [];
   const analysesById = new Map(analyses.map(a => [a.id, a]));
 
-  /* Muestra oficial de PICKS: enlazado + prospectivo + versionado + con odds */
+  /* Muestra oficial principal: SOLO ML/RL/Total, además de estar enlazado,
+     prospectivo, versionado y con odds. Props sugeridos/para revisar quedan
+     en overall para tracking manual, nunca en las métricas oficiales. */
   const officialPicks = picks.filter(p => {
-    if (p?.analysis_id == null) return false;
+    if (!isOfficialMainPick(p) || p?.analysis_id == null) return false;
     const a = analysesById.get(p.analysis_id);
     return !!a && a.retro === 0 && a.logic_version != null && a.odds_json != null;
   });
@@ -271,7 +277,7 @@ export function buildEvaluation({ picks, analyses } = {}) {
   };
 
   const officialSample = {
-    criteria: "analysis_id + retro=0 + logic_version + odds_json",
+    criteria: "tipo ML/RL/Total + analysis_id + retro=0 + logic_version + odds_json",
     criteriaProps: "tipo=Prop oficial + analysis_id + retro=0 + logic_version + props_json",
     ...record(officialPicks),
     roiML: roi,
@@ -284,6 +290,7 @@ export function buildEvaluation({ picks, analyses } = {}) {
     mlVerificado:        { ...record(officialPicks.filter(p => tipoDe(p).startsWith("moneyline"))), roiEligible: true },
     senalesRLTotal:      { ...record(senales), roiEligible: false, nota: "SEÑAL sin EV — win rate sí, ROI no" },
     propsParaRevisar:    { ...record(picks.filter(p => tipoDe(p) === "propspararevisar" || norm(p?.tipo) === "prop para revisar")), roiEligible: false, nota: "línea/cuota no verificadas" },
+    propsSugeridos:      { ...record(picks.filter(p => norm(p?.tipo) === "prop sugerido")), roiEligible: false, officialSampleEligible: false, nota: "Ángulo Radar con resultado manual; fuera de ROI y settlement automático" },
     propsOficiales:      { ...record(officialPropPicks), roiEligible: true, roi: roiProps, nota: "bucket independiente; cuota congelada en props_json" },
     propsLegado:         { ...record(picks.filter(p => norm(p?.tipo) === "prop")), roiEligible: false, nota: "era pre-verificación" },
     historicoSinRegistro:{ ...record(picks.filter(p => p?.analysis_id == null)), roiEligible: false, nota: "sin cuota registrada — no auditable" },

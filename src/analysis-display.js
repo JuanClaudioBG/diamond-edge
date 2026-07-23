@@ -39,8 +39,14 @@ export function totalDisplay(t) {
  */
 export function pickBadge(pk) {
   if (!pk) return { texto: null, clase: null, activo: false };
+  if (pk.abstencion === true || norm(pk.tipo).trim() === "sin pick recomendado") {
+    return { texto: "ABSTENERSE", clase: "NOOF", activo: false };
+  }
   if (pk.noOficial === true || pk.valor === "SEÑAL NO OFICIAL") {
     return { texto: "SEÑAL NO OFICIAL", clase: "NOOF", activo: false };
+  }
+  if (pk.valor === "SIN VALOR") {
+    return { texto: "SIN VALOR", clase: "BAJO", activo: false };
   }
   const v = pk.valor;
   const texto = (v === "SIN CUOTA" || v === "SIN VERIFICAR" || v === "SIN VALOR" || String(v).startsWith("SEÑAL"))
@@ -246,6 +252,6 @@ export function batterRadarDisplay(radar) {
       .filter(Boolean))
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 4)
-    .map(({ weight, ...angle }) => angle);
+    .map(({ teamName, name, label }) => ({ teamName, name, label }));
   return { visible: true, status: radar.status ?? "OK", angles, teams };
 }

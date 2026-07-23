@@ -9,13 +9,25 @@ import { readFileSync } from "fs";
 
 const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 
-test("LOGIC_VERSION es 2026-07-21.7 con historial documentado", () => {
-  assert.match(src, /const LOGIC_VERSION = "2026-07-21\.7"/);
+test("LOGIC_VERSION es 2026-07-23.8 con historial documentado", () => {
+  assert.match(src, /const LOGIC_VERSION = "2026-07-23\.8"/);
   assert.match(src, /\.5 = Statcast ofensivo real/, "el historial del bump debe estar documentado");
   assert.match(src, /\.6 = Totales requieren 4\/4 para señal alta/, "el cambio estratégico debe quedar documentado");
   assert.match(src, /\.7 = picks sugeridos no oficiales desde Radar de Bateadores\/Ponches/, "la integración de Radar debe quedar documentada");
+  assert.match(src, /\.8 = umbrales EV ML 3\/6\/10/, "los nuevos umbrales y la abstención deben quedar documentados");
   const definitions = src.match(/const LOGIC_VERSION =/g);
   assert.equal(definitions.length, 1, "una sola definición de LOGIC_VERSION");
+});
+
+test("prompt: pitcher con menos de 30 IP recibe regresión 40% y advertencia exacta", () => {
+  assert.match(src, /REGLA DE MUESTRA PEQUEÑA DEL PITCHER/);
+  assert.match(src, /menos de 30 IP en la temporada/);
+  assert.match(src, /métrica ajustada = media de referencia \+ 0\.60 × \(métrica observada − media de referencia\)/);
+  assert.match(src, /NO multipliques directamente la métrica por 0\.60/);
+  assert.match(src, /concede únicamente 60% del peso analítico/);
+  assert.match(src, /MUESTRA PEQUEÑA — métricas con baja confianza estadística/);
+  assert.match(src, /Exactamente 30 IP no activa esta penalización/);
+  assert.match(src, /IP ausente se trata como confianza desconocida/);
 });
 
 test("prompt: Totales requieren 4/4; con menos bajan a BAJO y llevan ambas notas", () => {

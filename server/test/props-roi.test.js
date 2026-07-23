@@ -171,6 +171,7 @@ test("props retro, sin versión, legado o para revisar jamás entran al bucket R
       prop({ id: 2, analysis_id: 2 }),
       { ...prop({ id: 3, analysis_id: 3 }), tipo: "Prop" },
       { ...prop({ id: 4, analysis_id: 3 }), tipo: "Prop para revisar" },
+      { ...prop({ id: 5, analysis_id: 3 }), tipo: "Prop sugerido" },
     ],
     analyses: [
       analysis({ id: 1, retro: 1 }),
@@ -180,6 +181,7 @@ test("props retro, sin versión, legado o para revisar jamás entran al bucket R
   });
   assert.equal(ev.officialSample.roiProps.n, 0);
   assert.equal(ev.byVerificationStatus.propsOficiales.n, 0);
+  assert.equal(ev.byVerificationStatus.propsSugeridos.n, 1);
 });
 
 test("UI muestra récord, win rate, ROI y unidades del bucket Props Oficiales", () => {

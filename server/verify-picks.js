@@ -20,11 +20,6 @@
  */
 
 const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z]/g, "");
-const valueLevel = (s) => {
-  const v = String(s ?? "").toUpperCase().replace(/^VALOR\s+/, "").trim();
-  return ["ALTO", "MEDIO", "BAJO"].includes(v) ? v : null;
-};
-
 const UNVERIFIED_NOTE = "⚠️ Cuota exacta no verificada. Análisis cualitativo; no entra a ROI ni a la muestra oficial.";
 const VERIFIED_NOTE   = "CUOTA VERIFICADA · EV NO CALCULADO — La línea y cuota coinciden con el mercado registrado, pero no existe probabilidad numérica del modelo para calcular EV. No entra a ROI ni a la muestra oficial.";
 const PROP_NOTE       = "⚠️ Línea y cuota no verificadas. No entra a ROI ni a la muestra oficial.";
@@ -215,50 +210,81 @@ export function attachMarketTotalLine(totalCarreras, oddsGame) {
    contratos ya existentes — no recalculan probabilidades ni EV: solo
    LEEN el objeto mercado ya calculado y los campos ya inyectados. */
 
+/** Clasificación autoritaria del servidor. Los límites son no ambiguos:
+ * <3 SIN VALOR · [3,6) BAJO · [6,10] MEDIO · >10 ALTO. */
+export function classifyMlEv(ev) {
+  if (!Number.isFinite(ev)) return null;
+  if (ev < 3) return "SIN VALOR";
+  if (ev < 6) return "BAJO";
+  if (ev <= 10) return "MEDIO";
+  return "ALTO";
+}
+
+/** Ambos edges ML desde probabilidades de mercado sin vig y del modelo. */
+export function moneylineEdges(mercado) {
+  const raw = [mercado?.probModeloLocal, mercado?.probMercadoLocal, mercado?.probMercadoVisitante];
+  if (raw.some(v => v === null || v === undefined || v === "")) return null;
+  const [modelHome, marketHome, marketAway] = raw.map(Number);
+  if (![modelHome, marketHome, marketAway].every(Number.isFinite)) return null;
+  return {
+    home: modelHome - marketHome,
+    away: (100 - modelHome) - marketAway,
+  };
+}
+
 /**
- * Moneyline con EV del servidor ≤ 0 jamás puede presentarse como pick de
- * valor (VALOR ALTO/MEDIO/BAJO). Se degrada a "SIN VALOR" conservando
- * cuotaReal, verificado y el objeto mercado intactos.
+ * Clasifica cada Moneyline exclusivamente por su EV del servidor, sin aceptar
+ * que el badge emitido por el LLM eleve o reduzca el nivel. Conserva cuota,
+ * verificación y la razón deportiva original.
  * EV por lado desde los campos existentes de mercado (en puntos %):
  *   local:     probModeloLocal − probMercadoLocal
  *   visitante: (100 − probModeloLocal) − probMercadoVisitante
  */
 export function enforceMlValueConsistency(picks, mercado, homeName, awayName) {
-  if (!Array.isArray(picks) || !mercado || mercado.probModeloLocal == null) return picks;
+  if (!Array.isArray(picks) || !moneylineEdges(mercado)) return picks;
   return picks.map(pick => {
     if (!norm(pick?.tipo).startsWith("moneyline")) return pick;
     const team = teamInText(pick.pick, homeName, awayName);
     if (team == null) return pick;                                  // lado no mapeable: no tocar
     const side = team === homeName ? "home" : "away";
-    const ev = side === "home"
-      ? mercado.probModeloLocal - mercado.probMercadoLocal
-      : (100 - mercado.probModeloLocal) - mercado.probMercadoVisitante;
+    const edges = moneylineEdges(mercado);
+    const ev = edges[side];
     if (!Number.isFinite(ev)) return pick;
     const evTxt = `${ev > 0 ? "+" : ""}${(Math.round(ev * 10) / 10).toFixed(1)}`;
-    if (ev <= 0) {
-      return {
-        ...pick,
-        valor: "SIN VALOR",
-        razon: `EV del servidor: ${evTxt}% — la cuota paga menos que la probabilidad estimada; no es pick de valor. ${pick.razon ?? ""}`.trim(),
-      };
-    }
-    const level = valueLevel(pick.valor);
-    if (ev < 2 && (level === "MEDIO" || level === "ALTO")) {
-      return {
-        ...pick,
-        valor: "BAJO",
-        razon: `Edge del servidor: ${evTxt}% — ventaja mínima; se degrada a valor bajo. ${pick.razon ?? ""}`.trim(),
-      };
-    }
-    if (ev < 5 && level === "ALTO") {
-      return {
-        ...pick,
-        valor: "MEDIO",
-        razon: `Edge del servidor: ${evTxt}% — ventaja moderada; se degrada a valor medio. ${pick.razon ?? ""}`.trim(),
-      };
-    }
-    return pick;
+    const valor = classifyMlEv(ev);
+    const note = valor === "SIN VALOR"
+      ? `EV del servidor: ${evTxt}% — edge insuficiente; no se recomienda como apuesta.`
+      : valor === "BAJO"
+        ? `EV del servidor: ${evTxt}% — valor bajo según umbral 3%-<6%.`
+        : valor === "MEDIO"
+          ? `EV del servidor: ${evTxt}% — valor medio según umbral 6%-10%.`
+          : `EV del servidor: ${evTxt}% — valor alto según umbral superior a 10%.`;
+    return { ...pick, valor, razon: `${note} ${pick.razon ?? ""}`.trim() };
   });
+}
+
+export const ML_ABSTENTION_REASON = "Edge insuficiente para recomendar una apuesta en este partido — ambas probabilidades dentro del margen de error del modelo";
+
+/**
+ * Si ningún lado ML alcanza 3%, agrega una sola tarjeta informativa de
+ * abstención. Se calculan ambos lados aunque el LLM haya emitido un solo ML.
+ */
+export function appendMlAbstention(picks, mercado) {
+  if (!Array.isArray(picks)) return picks;
+  const edges = moneylineEdges(mercado);
+  if (!edges) return picks;
+  const withoutPrevious = picks.filter(p =>
+    p?.abstencion !== true && norm(p?.tipo) !== "sinpickrecomendado"
+  );
+  if (edges.home >= 3 || edges.away >= 3) return withoutPrevious;
+  return [...withoutPrevious, {
+    tipo: "Sin pick recomendado",
+    pick: "Abstenerse en Moneyline",
+    valor: "SIN VALOR",
+    riesgo: "N/A",
+    abstencion: true,
+    razon: ML_ABSTENTION_REASON,
+  }];
 }
 
 /**

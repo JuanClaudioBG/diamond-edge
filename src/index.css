@@ -132,6 +132,8 @@ html,body,#root{height:100%;background:var(--bg);color:var(--tx);font-family:var
 .radar-angle-note{font-family:var(--fm);font-size:9px;color:var(--mu);padding:0 70px 0 0}
 .padd.radar-add{border-color:var(--cy);color:var(--cy)}
 .padd.radar-add:hover{background:var(--cy);color:var(--bg)}
+.hpick.radar-history{border-left:3px solid var(--cy)}
+.history-radar-tag{display:inline-block;margin-right:6px;padding:1px 5px;border:1px solid rgba(0,188,212,.35);border-radius:2px;background:rgba(0,188,212,.1);color:var(--cy);font-family:var(--fm);font-size:8px;letter-spacing:.8px}
 /* Parlay */
 .pcont{padding:14px}
 .pmt{text-align:center;padding:40px 20px;color:var(--dm)}
